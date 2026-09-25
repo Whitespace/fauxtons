@@ -25,12 +25,15 @@ canvas.dragging {
 .controls {
   position: fixed;
   left: 16px;
+  right: 80px;
   bottom: 16px;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
-.controls button {
+.controls button,
+.controls select {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -68,13 +71,36 @@ canvas.dragging {
   opacity: 1;
 }
 
-.controls button:hover {
+.controls button:hover,
+.controls select:hover {
   border-color: rgb(255 255 255 / 0.18);
 }
 
-.controls button:focus-visible {
+.controls button:focus-visible,
+.controls select:focus-visible {
   outline: 1px solid rgb(255 255 255 / 0.5);
   outline-offset: 2px;
+}
+
+.controls select {
+  padding: 6px 9px;
+  color: rgb(255 255 255 / 0.85);
+  appearance: none;
+}
+
+.controls select option {
+  color: initial;
+}
+
+.readout {
+  position: fixed;
+  left: 16px;
+  bottom: 52px;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  color: rgb(255 255 255 / 0.55);
+  pointer-events: none;
+  user-select: none;
 }
 
 .fps {

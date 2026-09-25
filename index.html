@@ -13,8 +13,14 @@
     <button type="button" data-toggle="spot" aria-pressed="true">Spot</button>
     <button type="button" data-toggle="veil" aria-pressed="true">Veil</button>
     <button type="button" data-toggle="bounds" aria-pressed="false">Boundaries</button>
+    <select data-control="count" aria-label="Number of lamps"></select>
+    <button type="button" data-action="optimize" aria-pressed="false">Optimise</button>
+    <button type="button" data-action="reset">Re-place</button>
+    <button type="button" data-action="save-layout">Save</button>
+    <button type="button" data-action="copy-layout">Copy layout</button>
     <button type="button" data-action="copy-link">Copy link</button>
   </div>
+  <output class="readout"></output>
   <output class="fps"></output>
   <script type="module" src="src/main.js"></script>
 </body>

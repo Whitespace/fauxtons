@@ -3,25 +3,26 @@ precision highp int;
 precision highp sampler2D;
 precision highp usampler2D;
 
-// LAMP_COUNT and ATLAS_SIDE, the maps along each side of the atlas, are defined for the scene before this
-// (renderer.js).
+// LAMP_CAPACITY, the most lamps a scene can have, is defined before this (renderer.js).
 
 const float INF = 1e30;
 
-// Packed by packLamps() in scene.js.
+// Packed by packLamps() in scene.js. The first LAMP_COUNT lamps are the scene's.
 layout(std140) uniform Lamps {
-  vec4 lampOrigin[LAMP_COUNT];    // xyz position, w sqrt(P)
-  vec4 lampAxis[LAMP_COUNT];      // xyz unit axis, w c = cos²α
-  vec4 lampRight[LAMP_COUNT];     // xyz map right, w tan of the cutoff angle
-  vec4 lampUp[LAMP_COUNT];        // xyz map up, w cos² of the cutoff angle
-  vec4 lampColor[LAMP_COUNT];     // rgb colour, w P
-  vec4 lampPartners[LAMP_COUNT];  // xyz the lamps whose veils with this one are drawn, -1 for none
-  vec4 sceneParams;               // x R, y p_min, z map size in texels, w SURFACE_GAP (scene.js)
+  vec4 lampOrigin[LAMP_CAPACITY];  // xyz position, w sqrt(P)
+  vec4 lampAxis[LAMP_CAPACITY];    // xyz unit axis, w c = cos²α
+  vec4 lampRight[LAMP_CAPACITY];   // xyz map right, w tan of the cutoff angle
+  vec4 lampUp[LAMP_CAPACITY];      // xyz map up, w cos² of the cutoff angle
+  vec4 lampColor[LAMP_CAPACITY];   // rgb colour, w P
+  vec4 sceneParams;                // x R, y p_min, z map size in texels, w SURFACE_GAP (scene.js)
+  vec4 layoutParams;               // x lamp count, y maps along each side of the atlas
 };
 
 #define RANGE sceneParams.x
 #define P_MIN sceneParams.y
 #define MAP_SIZE int(sceneParams.z)
+#define LAMP_COUNT int(layoutParams.x)
+#define ATLAS_SIDE int(layoutParams.y)
 
 // How far past the reach interpolated from the rays around a point another lamp's light still counts
 // as present there, at most, relative to the point's distance from that lamp: a few texels' worth, as

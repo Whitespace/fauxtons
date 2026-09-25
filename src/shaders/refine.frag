@@ -22,7 +22,7 @@ void main() {
   vec3 o = lampOrigin[i].xyz;
   float stop = min(RANGE, texelFetch(uOccluder, px, 0).r);
   if (dir.y < 0.0) stop = min(stop, -o.y / dir.y);
-  int partner;
-  float end = extinction(i, dir, (1.0 - SURFACE_GAP) * stop, true, partner);
+  int partner, stopper;
+  float end = extinction(i, dir, (1.0 - SURFACE_GAP) * stop, true, partner, stopper);
   outState = end < INF ? vec2(end, float(partner)) : vec2(stop, stop < RANGE ? -2.0 : -1.0);
 }

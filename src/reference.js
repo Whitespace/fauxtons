@@ -3,7 +3,7 @@
 // brighter and reached by its own light. Slow, but it makes an independent check of the sweep.
 
 import { transformPoint } from './mat4.js';
-import { ATLAS_SIDE, MAP_SIZE, P_MIN, RANGE, SURFACE_GAP } from './scene.js';
+import { P_MIN, RANGE, SURFACE_GAP } from './scene.js';
 
 // Light is tested at points this far apart along each ray, so stretches of other light shorter than
 // that can slip through.
@@ -81,12 +81,12 @@ export function createReference(lamps, triangles, step = STEP) {
   return { fieldDistance, reaches, litBy };
 }
 
-// Random points on the ground within a few units of Spot and, if it is there, on Spot, as the surface
-// pass sees them (litBy() in exact.glsl): the point on a flat facet, the facet's normal and how far it
-// strays from the smooth surface, the point of the smooth surface over it where light is tested
+// Random points on Spot and, `withGround`, as many on the ground within a few units of it, as the
+// surface pass sees them (litBy() in exact.glsl): the point on a flat facet, the facet's normal and how
+// far it strays from the smooth surface, the point of the smooth surface over it where light is tested
 // (smoothPoint() in surface.frag) and that surface's normal, interpolated from the mesh's. Points on Spot
 // are spread by area.
-export function sampleSurfaces({ mesh, model, withSpot, count, seed = 1 }) {
+export function sampleSurfaces({ mesh, model, withGround = true, count, seed = 1 }) {
   const random = mulberry32(seed);
   const positions = new Float32Array(3 * count);
   const facets = new Float32Array(3 * count);
@@ -107,7 +107,7 @@ export function sampleSurfaces({ mesh, model, withSpot, count, seed = 1 }) {
   }
 
   for (let s = 0; s < count; s++) {
-    if (!withSpot || s % 2 === 0) {
+    if (withGround && s % 2 === 0) {
       const radius = 3 * Math.sqrt(random());
       const angle = 2 * Math.PI * random();
       const x = [radius * Math.cos(angle), 0, radius * Math.sin(angle)];
@@ -191,15 +191,17 @@ export function compareSurfacesWithReference({ reference, points, lit, limit }) 
   };
 }
 
-// Compares the solver's published solution with the reference at random points in the air. `reachAt`
-// gives the distance at which the ray at an atlas texel ended.
-export function compareWithReference({ lamps, reference, reachAt, samples, seed = 1 }) {
+// Compares the solver's published solution with the reference at random points in the air, in the box
+// `bounds`. `reachAt` gives the distance at which the ray at an atlas texel ended.
+export function compareWithReference({ lamps, layout, reference, reachAt, samples, bounds, seed = 1 }) {
+  const { atlasSide, mapSize } = layout;
+  const { min, max } = bounds ?? { min: [-6, 0.02, -6], max: [6, 6, 6] };
   const random = mulberry32(seed);
   let pairs = 0;
   const disagreements = [];
 
   for (let s = 0; s < samples; s++) {
-    const x = [12 * random() - 6, 0.02 + 6 * random(), 12 * random() - 6];
+    const x = [0, 1, 2].map((k) => min[k] + (max[k] - min[k]) * random());
     lamps.forEach((lamp, i) => {
       if (reference.fieldDistance(i, ...x) === Infinity) return;
       pairs++;
@@ -208,8 +210,8 @@ export function compareWithReference({ lamps, reference, reachAt, samples, seed 
       const z = d[0] * lamp.axis[0] + d[1] * lamp.axis[1] + d[2] * lamp.axis[2];
       const u = 0.5 * (d[0] * lamp.right[0] + d[1] * lamp.right[1] + d[2] * lamp.right[2]) / (z * lamp.cutoffTan) + 0.5;
       const v = 0.5 * (d[0] * lamp.up[0] + d[1] * lamp.up[1] + d[2] * lamp.up[2]) / (z * lamp.cutoffTan) + 0.5;
-      const tx = Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(u * MAP_SIZE))) + (i % ATLAS_SIDE) * MAP_SIZE;
-      const ty = Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(v * MAP_SIZE))) + Math.floor(i / ATLAS_SIDE) * MAP_SIZE;
+      const tx = Math.min(mapSize - 1, Math.max(0, Math.floor(u * mapSize))) + (i % atlasSide) * mapSize;
+      const ty = Math.min(mapSize - 1, Math.max(0, Math.floor(v * mapSize))) + Math.floor(i / atlasSide) * mapSize;
       const reach = reachAt(tx, ty);
       const solver = r < reach;
       const exact = reference.reaches(i, ...x);

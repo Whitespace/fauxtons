@@ -122,3 +122,28 @@ field-distance `d` depends on nothing decided at a larger field-distance.
 
 Distances are in scene units. These values suit lamps a few units above the ground and a few units
 apart.
+
+## Lighting Spot from inside
+
+The scene is a Spot 24 units tall with its lamps inside, lighting its walls from within: a sculpture of
+translucent cells, one lamp to each, whose patches of wall should all be lit evenly, with no dark spots,
+no hot spots and no jumps in brightness where patches meet.
+
+- **Layouts.** A layout is where each lamp is, where it points and how bright it is, with a dimmer
+  that turns it down to half its full power at most. The page shows the saved layout in `layouts/` for
+  the number of lamps chosen, or places that many afresh.
+- **Placing lamps.** Lamps go in clusters, a few back to back at one place, facing out. Lamps that share
+  a place never cut into each other's light, and where their patches meet, their fields and their
+  angles of incidence agree, so the brightness carries on across the seam. Places are picked one at a
+  time, each where a lamp could light well the most of the wall not yet lit well (`src/clusters.js`).
+- **Optimising.** Each round solves the cells, measures how every vertex of Spot is lit, and moves
+  every lamp a damped Gauss-Newton step towards lighting its patch at the mean brightness, in log terms.
+  A lamp slides along its own axis, turns and dims; a cluster moves by the push of all its lamps. Dark
+  vertices pull on the nearest cone, and where one lamp's light cuts off another's, both are pushed apart.
+  Moves that leave more of Spot dark are undone (`src/optimizer.js`).
+- **Measures.** The readout gives the share of the wall left dark, the ratio of the 95th to the 5th
+  percentile of brightness over the lit wall, and the share of seams where the brightness jumps by more
+  than a fifth.
+
+Optimise runs rounds until it is pressed again, then shows the best layout found; Save writes it to
+`layouts/` through the development server.

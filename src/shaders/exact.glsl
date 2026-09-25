@@ -238,15 +238,16 @@ float leadTurn(int k, vec3 o, vec3 w, float speed, float a, float b) {
 
 // Where the light of lamp j, travelling from its lamp along the unit direction w, runs into the light of
 // a lamp with a stronger field before distance tEnd: the first such point if `first`, else any, and INF
-// if there is none. `partner` is that lamp where the two meet head on, at their isolux veil, else -1.
-// The stretches of the ray where another lamp's field is the stronger are found by sampling the lead
-// along the ray and refining by bisection, including brief ones where the ray just grazes the other
-// lamp's side of their isolux veil.
-float extinction(int j, vec3 w, float tEnd, bool first, out int partner) {
+// if there is none. `stopper` is the lamp whose light it runs into there, and `partner` the same lamp
+// where the two meet head on, at their isolux veil, else -1. The stretches of the ray where another
+// lamp's field is the stronger are found by sampling the lead along the ray and refining by bisection,
+// including brief ones where the ray just grazes the other lamp's side of their isolux veil.
+float extinction(int j, vec3 w, float tEnd, bool first, out int partner, out int stopper) {
   vec3 o = lampOrigin[j].xyz;
   float speed = lampOrigin[j].w * profile(j, w);
   float best = INF;
   partner = -1;
+  stopper = -1;
   for (int k = 0; k < LAMP_COUNT; ++k) {
     if (k == j) continue;
     vec2 span = coneSpan(k, o, w, min(tEnd, best));
@@ -286,6 +287,7 @@ float extinction(int j, vec3 w, float tEnd, bool first, out int partner) {
     if (found >= INF && start >= 0.0) found = presentFrom(k, o, w, start, span.y, first);
     if (found < best) {
       best = found;
+      stopper = k;
       partner = fieldDistance(k, o + found * w) > (1.0 - 2e-3) * found / speed ? k : -1;
       if (!first) return best;
     }
@@ -301,8 +303,8 @@ bool reachesExact(int j, vec3 x, float skip) {
   float dist = length(d);
   vec3 w = d / dist;
   float end = (1.0 - SURFACE_GAP) * dist;
-  int partner;
-  return !spotBlocks(o, w, min(end, dist - skip)) && extinction(j, w, end, false, partner) >= INF;
+  int partner, stopper;
+  return !spotBlocks(o, w, min(end, dist - skip)) && extinction(j, w, end, false, partner, stopper) >= INF;
 }
 
 // Whether lamp j's light reaches the point x of a flat facet with normal `facet`, as far as the four
@@ -339,6 +341,29 @@ int litFromMaps(int j, vec3 x, vec3 facet) {
   return lit == 4 ? 1 : lit == 0 ? 0 : -1;
 }
 
+// Field of lamp i at x as a surface there with unit normal `normal` sees it: zero where the surface
+// faces away from the lamp.
+float facingField(int i, vec3 x, vec3 normal) {
+  vec3 d = x - lampOrigin[i].xyz;
+  return dot(normal, d) < 0.0 ? field(i, x) : 0.0;
+}
+
+// The next lamp to try, strongest first: of the lamps after `last`, which had field `bound`, in order of
+// decreasing field and then of increasing index, the first. -1 if there is none with a field.
+int nextStrongest(vec3 x, vec3 normal, bool surface, float bound, int last, out float strength) {
+  int best = -1;
+  strength = 0.0;
+  for (int i = 0; i < LAMP_COUNT; ++i) {
+    float s = surface ? facingField(i, x, normal) : field(i, x);
+    bool after = s < bound || (s == bound && i > last);
+    if (s > strength && after) {
+      best = i;
+      strength = s;
+    }
+  }
+  return best;
+}
+
 // The lamp whose light reaches a surface point, or -1 if none does. The point is x on a flat facet with
 // normal `facet`, shaded as the smooth surface with normal `normal`, and its light is tested at the
 // point `lifted` of that smooth surface over x (see surface.frag). Where the light of more than one lamp
@@ -348,23 +373,58 @@ int litFromMaps(int j, vec3 x, vec3 facet) {
 // the facets next to x would still cut into its light. Spot is not looked for on the last stretch of the
 // lamp's ray that is less than `rough` above the smooth surface's tangent plane at x, up to 30 `rough`.
 int litBy(vec3 x, vec3 facet, vec3 lifted, vec3 normal, float rough) {
-  float strength[LAMP_COUNT];
-  float skip[LAMP_COUNT];
-  for (int i = 0; i < LAMP_COUNT; ++i) {
-    vec3 d = x - lampOrigin[i].xyz;
-    float cosine = -dot(normal, d) / length(d);
-    strength[i] = cosine > 0.0 ? field(i, x) : 0.0;
-    skip[i] = min(rough / max(cosine, 1e-3), 30.0 * rough);
-  }
+  float bound = INF;
+  int best = -1;
   for (int n = 0; n < LAMP_COUNT; ++n) {
-    int best = -1;
-    for (int i = 0; i < LAMP_COUNT; ++i) {
-      if (strength[i] > 0.0 && (best < 0 || strength[i] > strength[best])) best = i;
-    }
+    float strength;
+    best = nextStrongest(x, normal, true, bound, best, strength);
     if (best < 0) break;
+    bound = strength;
     int known = litFromMaps(best, x, facet);
-    if (known == 1 || (known < 0 && reachesExact(best, lifted, skip[best]))) return best;
-    strength[best] = 0.0;
+    if (known == 1) return best;
+    if (known < 0) {
+      vec3 d = x - lampOrigin[best].xyz;
+      float cosine = -dot(normal, d) / length(d);
+      if (reachesExact(best, lifted, min(rough / max(cosine, 1e-3), 30.0 * rough))) return best;
+    }
   }
   return -1;
+}
+
+// The lamp whose light is present at the point y in the air, or -1 where it is dark.
+int lightAt(vec3 y) {
+  float bound = INF;
+  int best = -1;
+  for (int n = 0; n < LAMP_COUNT; ++n) {
+    float strength;
+    best = nextStrongest(y, vec3(0.0), false, bound, best, strength);
+    if (best < 0) break;
+    bound = strength;
+    vec3 o = lampOrigin[best].xyz;
+    vec3 d = y - o;
+    float dist = length(d);
+    int partner, stopper;
+    if (!spotBlocks(o, d / dist, dist) && extinction(best, d / dist, dist, false, partner, stopper) >= INF) return best;
+  }
+  return -1;
+}
+
+// For a surface point that no lamp lights (see litBy()): the lamp with the strongest field there that
+// faces it, -1 if none, what stopped that lamp's light short of it (x), the lamp whose light it ran
+// into first, or -2 for Spot, and where along its ray it ran into that light (y).
+vec3 blame(vec3 x, vec3 lifted, vec3 normal, float rough) {
+  float strength;
+  int victim = nextStrongest(x, normal, true, INF, -1, strength);
+  if (victim < 0) return vec3(-1.0, -1.0, 0.0);
+  vec3 o = lampOrigin[victim].xyz;
+  vec3 d = lifted - o;
+  float dist = length(d);
+  vec3 w = d / dist;
+  float end = (1.0 - SURFACE_GAP) * dist;
+  float cosine = -dot(normal, w);
+  float skip = min(rough / max(cosine, 1e-3), 30.0 * rough);
+  if (spotBlocks(o, w, min(end, dist - skip))) return vec3(victim, -2.0, 0.0);
+  int partner, stopper;
+  float t = extinction(victim, w, end, true, partner, stopper);
+  return vec3(victim, stopper, t < INF ? t : 0.0);
 }

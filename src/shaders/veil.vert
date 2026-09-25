@@ -1,13 +1,13 @@
 // The visible isolux veils, taken from the solution: where lamp i's light ended on its veil with lamp
 // j, the end points of i's rays lie on the part of that veil both lights reach. Instance (i, slot)
-// meshes lamp i's veil with its partner j in that slot (lampPartners) over a coarse grid of i's map;
-// slots without a partner, and cells without any such
-// rays nearby collapse. Grid corners are placed on the veil itself by solving d_i = d_j along their
-// rays, and the fragment shader decides which parts of the sheet are visible.
+// meshes lamp i's veils over a coarse grid of i's map, each cell with the partner j in that slot of the
+// cell (cells.frag); cells without a partner in the slot collapse. Grid corners are placed on the veil
+// itself by solving d_i = d_j along their rays, and the fragment shader decides which parts of the sheet
+// are visible.
 
 uniform sampler2D uReach;  // reach distance of every ray
 uniform usampler2D uTags;  // the lamp whose veil each ray ended on, plus one; 0 if none
-uniform sampler2D uCells;  // per cell and partner slot: mean reach of the rays ending on that veil
+uniform sampler2D uCells;  // per cell, two partners and the mean reach of the rays ending on each veil
 uniform mat4 uViewProj;
 uniform int uStride;       // map texels between neighbouring grid points
 
@@ -34,15 +34,17 @@ float veilCrossing(int i, int j, vec3 dir, float guess) {
 }
 
 void main() {
-  int i = gl_InstanceID / 3;
-  int slot = gl_InstanceID % 3;
-  int j = int(lampPartners[i][slot]);
+  int i = gl_InstanceID / 2;
+  int slot = gl_InstanceID % 2;
   int cells = MAP_SIZE / uStride;
   int quad = gl_VertexID / 6;
   ivec2 cell = ivec2(quad % (cells - 1), quad / (cells - 1));
 
-  float reach = j < 0 ? 0.0 : texelFetch(uCells, atlasCell(i) * cells + cell, 0)[slot];
-  if (reach <= 0.0) {
+  vec4 partners = texelFetch(uCells, atlasCell(i) * cells + cell, 0);
+  vec2 entry = slot == 0 ? partners.xy : partners.zw;
+  float reach = entry.x;
+  int j = int(entry.y);
+  if (j < 0 || reach <= 0.0) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     vPair = ivec2(0);
     vWorld = vec3(0.0);
