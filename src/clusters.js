@@ -23,16 +23,19 @@ const MAX_DISTANCE = 12;
 // A place nearer a wall than this counts for its share of it.
 const NEAR_WALL = 1;
 // Places stop being added once this share of the wall is lit well, or they would add less than
-// MIN_GAIN of it each, or there are a quarter as many places as lamps. Every place added makes seams
-// between its patches and the others', where the brightness jumps, so it has to be worth it: with 64
-// lamps, a fourth place adding 3% makes the lighting worse all round.
+// MIN_GAIN of it each, or there would be fewer than LAMPS_PER_PLACE lamps to a place, though there are
+// always MIN_PLACES if they add enough. Every place added makes seams between its patches and the
+// others', where the brightness jumps, and leaves fewer lamps to share out the wall at each place: with
+// 64 lamps, a fourth place makes the lighting worse all round, while 128 lamps light Spot best from 7.
 const COVERED = 0.995;
-const MIN_GAIN = 0.05;
+const MIN_GAIN = 0.005;
+const LAMPS_PER_PLACE = 18;
+const MIN_PLACES = 3;
 // Wall points judged, and how far out from its place each lamp sits.
 const TARGETS = 2048;
 const OFFSET = 0.2;
 
-export function clusterLayout({ renderer, samples, geometry, places, count, maxClusters = Math.floor(count / 4), minCosine = MIN_COSINE }) {
+export function clusterLayout({ renderer, samples, geometry, places, count, maxClusters = Math.max(MIN_PLACES, Math.floor(count / LAMPS_PER_PLACE)), minCosine = MIN_COSINE, minGain = MIN_GAIN }) {
   const targets = subsample(samples, TARGETS);
   const total = targets.areas.reduce((sum, a) => sum + a, 0);
   const covered = new Uint8Array(targets.count);
@@ -58,7 +61,7 @@ export function clusterLayout({ renderer, samples, geometry, places, count, maxC
     seen.forEach((area, k) => (seen[k] = area * Math.min(1, places.clearance[k] / NEAR_WALL)));
     let best = 0;
     for (let k = 1; k < seen.length; k++) if (seen[k] > seen[best]) best = k;
-    if (seen[best] < MIN_GAIN * total) break;
+    if (seen[best] < minGain * total) break;
     const center = Array.from(places.subarray(3 * best, 3 * best + 3));
     centers.push(center);
     const before = litArea;

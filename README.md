@@ -135,11 +135,11 @@ no hot spots and no jumps in brightness where patches meet.
 - **Placing lamps.** Lamps go in clusters, a few back to back at one place, facing out. Lamps that share
   a place never cut into each other's light, and where their patches meet, their fields and their
   angles of incidence agree, so the brightness carries on across the seam. Places are picked one at a
-  time, each where a lamp could light well the most of the wall not yet lit well, until another would
-  add less than a twentieth of the wall: seams between clusters jump, so a few large clusters light
-  Spot more evenly than many small ones (`src/clusters.js`). Lamps are shared out between places by the
-  solid angle of wall each serves, and aimed to split it evenly; new layouts get colours that differ
-  wherever patches meet (`src/colors.js`).
+  time, each where a lamp could light well the most of the wall not yet lit well: three, and then one
+  more for about every 18 lamps. Seams between clusters jump, and small clusters light their walls
+  unevenly, so a few large clusters do best: three for 64 lamps, seven for 128 (`src/clusters.js`).
+  Lamps are shared out between places by the solid angle of wall each serves, and aimed to split it
+  evenly; new layouts get colours that differ wherever patches meet (`src/colors.js`).
 - **Optimising.** Each round solves the cells, measures how every vertex of Spot is lit, and moves
   every lamp a damped Gauss-Newton step towards lighting its patch at the mean brightness, in log terms.
   A lamp slides along its own axis, turns and dims; a cluster moves by the push of all its lamps. Dark

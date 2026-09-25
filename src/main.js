@@ -235,14 +235,22 @@ async function main() {
   requestAnimationFrame(frame);
 
   // Console hooks: fauxton.check() compares the solution in the air with the README's recursive
-  // definition and fauxton.checkSurfaces() which lamp lights Spot's walls. fauxton.optimize(rounds) runs
-  // the optimiser without drawing, carrying on from where the last call stopped; keep each call to a few
-  // seconds, as the GPU drops the page's context when kept busy too long. fauxton.finish() shows the
-  // best layout found, and fauxton.layout() gives the layout shown as saved in layouts/.
+  // definition and fauxton.checkSurfaces() which lamp lights Spot's walls. fauxton.place(settings)
+  // places the lamps afresh, with settings for clusterLayout() such as maxClusters.
+  // fauxton.optimize(rounds) runs the optimiser without drawing, carrying on from where the last call
+  // stopped; keep each call to a few seconds, as the GPU drops the page's context when kept busy too
+  // long. fauxton.finish() shows the best layout found, and fauxton.layout() gives the layout shown as
+  // saved in layouts/.
   let batch = null;
   window.fauxton = {
     check: (count, bounds) => renderer.check(count, bounds),
     checkSurfaces: (candidates, limit, step) => renderer.checkSurfaces(candidates, limit, step),
+    place: (settings = {}) => {
+      stopOptimizing(false);
+      places ??= interiorPlaces(samples, geometry);
+      show(clusterLayout({ renderer, samples, geometry, places, count: options.count, ...settings }));
+      return { clusters: layout.centers.length, ...layout.metrics };
+    },
     optimize: (rounds, settings = {}) => {
       stopOptimizing(false);
       if (batch && batch.base !== layout) {
