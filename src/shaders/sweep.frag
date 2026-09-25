@@ -62,9 +62,13 @@ float veilPartner(int i, vec3 y, float di) {
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
   int n = MAP_SIZE;
-  int i = (px.x < n ? 0 : 1) + (px.y < n ? 0 : 2);
+  int i = atlasLamp(px, n);
 
   vec2 state = texelFetch(uState, px, 0).rg;
+  if (i < 0) {
+    outState = vec2(0.0, -1.0);
+    return;
+  }
   if (state.r < 0.5 * ALIVE) {
     outState = state;
     return;

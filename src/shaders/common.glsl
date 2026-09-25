@@ -3,18 +3,20 @@ precision highp int;
 precision highp sampler2D;
 precision highp usampler2D;
 
-#define LAMP_COUNT 4
+// LAMP_COUNT and ATLAS_SIDE, the maps along each side of the atlas, are defined for the scene before this
+// (renderer.js).
 
 const float INF = 1e30;
 
 // Packed by packLamps() in scene.js.
 layout(std140) uniform Lamps {
-  vec4 lampOrigin[LAMP_COUNT];  // xyz position, w sqrt(P)
-  vec4 lampAxis[LAMP_COUNT];    // xyz unit axis, w c = cos²α
-  vec4 lampRight[LAMP_COUNT];   // xyz map right, w tan of the cutoff angle
-  vec4 lampUp[LAMP_COUNT];      // xyz map up, w cos² of the cutoff angle
-  vec4 lampColor[LAMP_COUNT];   // rgb colour, w P
-  vec4 sceneParams;             // x R, y p_min, z map size in texels, w SURFACE_GAP (scene.js)
+  vec4 lampOrigin[LAMP_COUNT];    // xyz position, w sqrt(P)
+  vec4 lampAxis[LAMP_COUNT];      // xyz unit axis, w c = cos²α
+  vec4 lampRight[LAMP_COUNT];     // xyz map right, w tan of the cutoff angle
+  vec4 lampUp[LAMP_COUNT];        // xyz map up, w cos² of the cutoff angle
+  vec4 lampColor[LAMP_COUNT];     // rgb colour, w P
+  vec4 lampPartners[LAMP_COUNT];  // xyz the lamps whose veils with this one are drawn, -1 for none
+  vec4 sceneParams;               // x R, y p_min, z map size in texels, w SURFACE_GAP (scene.js)
 };
 
 #define RANGE sceneParams.x
@@ -93,7 +95,7 @@ vec2 coneSpan(int i, vec3 ro, vec3 rd, float tMax) {
 }
 
 // Each lamp's emission directions are mapped perspectively onto [0,1]², the square circumscribing
-// its cutoff cone. The four maps share one atlas, lamp i in quadrant (i & 1, i >> 1).
+// its cutoff cone. The maps share one square atlas, lamp i in cell atlasCell(i); spare cells are unused.
 vec2 mapUV(int i, vec3 d) {
   vec2 s = vec2(dot(d, lampRight[i].xyz), dot(d, lampUp[i].xyz));
   return 0.5 * s / (dot(d, lampAxis[i].xyz) * lampRight[i].w) + 0.5;
@@ -104,8 +106,19 @@ vec3 mapDirection(int i, vec2 uv) {
   return normalize(lampAxis[i].xyz + s.x * lampRight[i].xyz + s.y * lampUp[i].xyz);
 }
 
+ivec2 atlasCell(int i) {
+  return ivec2(i % ATLAS_SIDE, i / ATLAS_SIDE);
+}
+
 ivec2 atlasOrigin(int i) {
-  return ivec2(i & 1, i >> 1) * MAP_SIZE;
+  return atlasCell(i) * MAP_SIZE;
+}
+
+// The lamp whose map holds texel px of an atlas with `size` texels to a map, or -1 in a spare cell.
+int atlasLamp(ivec2 px, int size) {
+  ivec2 cell = px / size;
+  int i = cell.y * ATLAS_SIDE + cell.x;
+  return i < LAMP_COUNT ? i : -1;
 }
 
 // Uniform cubic B-spline weights of the texels at offsets -1, 0, 1 and 2 from the one below f.
@@ -140,7 +153,7 @@ bool jumps(sampler2D state, int i, ivec2 a, ivec2 b) {
 // Grid points of the boundary meshes sit every `stride` texels of each lamp's map, and their own
 // textures are an atlas of those grids.
 ivec2 gridOrigin(int i, int stride) {
-  return ivec2(i & 1, i >> 1) * (MAP_SIZE / stride);
+  return atlasCell(i) * (MAP_SIZE / stride);
 }
 
 // Grid point `grid` of lamp i's boundary mesh: the smoothed end point of the ray there (ends.frag),

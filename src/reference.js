@@ -3,7 +3,7 @@
 // brighter and reached by its own light. Slow, but it makes an independent check of the sweep.
 
 import { transformPoint } from './mat4.js';
-import { MAP_SIZE, P_MIN, RANGE, SURFACE_GAP } from './scene.js';
+import { ATLAS_SIDE, MAP_SIZE, P_MIN, RANGE, SURFACE_GAP } from './scene.js';
 
 // Light is tested at points this far apart along each ray, so stretches of other light shorter than
 // that can slip through.
@@ -208,8 +208,8 @@ export function compareWithReference({ lamps, reference, reachAt, samples, seed 
       const z = d[0] * lamp.axis[0] + d[1] * lamp.axis[1] + d[2] * lamp.axis[2];
       const u = 0.5 * (d[0] * lamp.right[0] + d[1] * lamp.right[1] + d[2] * lamp.right[2]) / (z * lamp.cutoffTan) + 0.5;
       const v = 0.5 * (d[0] * lamp.up[0] + d[1] * lamp.up[1] + d[2] * lamp.up[2]) / (z * lamp.cutoffTan) + 0.5;
-      const tx = Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(u * MAP_SIZE))) + (i & 1) * MAP_SIZE;
-      const ty = Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(v * MAP_SIZE))) + (i >> 1) * MAP_SIZE;
+      const tx = Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(u * MAP_SIZE))) + (i % ATLAS_SIDE) * MAP_SIZE;
+      const ty = Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(v * MAP_SIZE))) + Math.floor(i / ATLAS_SIDE) * MAP_SIZE;
       const reach = reachAt(tx, ty);
       const solver = r < reach;
       const exact = reference.reaches(i, ...x);

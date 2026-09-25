@@ -1,5 +1,5 @@
 import { bindTextures, createDepthBuffer, createFramebuffer, createTexture } from './gl.js';
-import { MAP_SIZE, P_MIN, RANGE, lampViewProjection } from './scene.js';
+import { ATLAS_SIDE, MAP_SIZE, P_MIN, RANGE, lampViewProjection } from './scene.js';
 
 const ALIVE = 1e30;
 
@@ -28,7 +28,7 @@ export class ExtinctionSolver {
     this.spot = spot;
     this.bvh = bvh;
     this.lamps = lamps;
-    this.size = 2 * MAP_SIZE;
+    this.size = ATLAS_SIDE * MAP_SIZE;
 
     // Distance to the nearest occluder along every ray: one for the sweep, one kept with the published
     // solution (see exact.glsl).
@@ -76,7 +76,7 @@ export class ExtinctionSolver {
     // Bounds of the reach over blocks of each map, level L of the blocks at mip L - 1 (see
     // reach-bounds.frag).
     this.boundsLevels = Math.log2(MAP_SIZE);
-    this.bounds = createTexture(gl, MAP_SIZE, MAP_SIZE, gl.RG32F, gl.NEAREST, this.boundsLevels);
+    this.bounds = createTexture(gl, this.size / 2, this.size / 2, gl.RG32F, gl.NEAREST, this.boundsLevels);
     this.boundsFbos = Array.from({ length: this.boundsLevels }, (_, m) => createFramebuffer(gl, [this.bounds], null, m));
 
     const fastest = Math.max(...lamps.map((lamp) => lamp.sqrtPower));
@@ -117,7 +117,7 @@ export class ExtinctionSolver {
       gl.uniformMatrix4fv(uniforms.uModel, false, spot.model);
       gl.bindVertexArray(spot.vao);
       this.lamps.forEach((lamp, i) => {
-        gl.viewport((i & 1) * MAP_SIZE, (i >> 1) * MAP_SIZE, MAP_SIZE, MAP_SIZE);
+        gl.viewport((i % ATLAS_SIDE) * MAP_SIZE, Math.floor(i / ATLAS_SIDE) * MAP_SIZE, MAP_SIZE, MAP_SIZE);
         gl.uniformMatrix4fv(uniforms.uViewProj, false, lampViewProjection(lamp));
         gl.uniform3fv(uniforms.uOrigin, lamp.position);
         gl.drawElements(gl.TRIANGLES, spot.count, spot.type, 0);
@@ -218,7 +218,7 @@ export class ExtinctionSolver {
     gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(uniforms.uSource, 0);
     for (let level = 1; level <= this.boundsLevels; level++) {
-      const size = MAP_SIZE >> (level - 1);
+      const size = this.size >> level;
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.boundsFbos[level - 1]);
       gl.viewport(0, 0, size, size);
       if (level === 1) {

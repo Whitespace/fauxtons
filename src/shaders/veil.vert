@@ -1,6 +1,7 @@
 // The visible isolux veils, taken from the solution: where lamp i's light ended on its veil with lamp
 // j, the end points of i's rays lie on the part of that veil both lights reach. Instance (i, slot)
-// meshes lamp i's veil with one other lamp j over a coarse grid of i's map; cells without any such
+// meshes lamp i's veil with its partner j in that slot (lampPartners) over a coarse grid of i's map;
+// slots without a partner, and cells without any such
 // rays nearby collapse. Grid corners are placed on the veil itself by solving d_i = d_j along their
 // rays, and the fragment shader decides which parts of the sheet are visible.
 
@@ -35,12 +36,12 @@ float veilCrossing(int i, int j, vec3 dir, float guess) {
 void main() {
   int i = gl_InstanceID / 3;
   int slot = gl_InstanceID % 3;
-  int j = slot < i ? slot : slot + 1;
+  int j = int(lampPartners[i][slot]);
   int cells = MAP_SIZE / uStride;
   int quad = gl_VertexID / 6;
   ivec2 cell = ivec2(quad % (cells - 1), quad / (cells - 1));
 
-  float reach = texelFetch(uCells, ivec2(i & 1, i >> 1) * cells + cell, 0)[slot];
+  float reach = j < 0 ? 0.0 : texelFetch(uCells, atlasCell(i) * cells + cell, 0)[slot];
   if (reach <= 0.0) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     vPair = ivec2(0);

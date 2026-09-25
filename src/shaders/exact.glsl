@@ -126,7 +126,7 @@ bool presentAt(int k, vec3 y) {
 // Bounds of lamp k's reach over the rays at the corners of a block of 2^level × 2^level cells of its map,
 // a cell being the square between four neighbouring rays.
 vec2 reachBounds(int k, ivec2 block, int level) {
-  if (level > 0) return texelFetch(uReachBounds, ivec2(k & 1, k >> 1) * (MAP_SIZE >> level) + block, level - 1).rg;
+  if (level > 0) return texelFetch(uReachBounds, atlasCell(k) * (MAP_SIZE >> level) + block, level - 1).rg;
   ivec2 origin = atlasOrigin(k);
   ivec2 last = ivec2(MAP_SIZE - 1);
   vec2 bounds = vec2(INF, 0.0);
@@ -307,8 +307,9 @@ bool reachesExact(int j, vec3 x, float skip) {
 
 // Whether lamp j's light reaches the point x of a flat facet with normal `facet`, as far as the four
 // rays of its map around x tell (refine.frag): 1 or 0 where they all end on the facet's plane and agree,
-// 0 where all of them end on a surface before it, and -1 otherwise: near an edge of the light, or where
-// the facet faces away from the lamp and only the smooth surface over it is lit.
+// 0 where all of them end on a surface well before it, and -1 otherwise: near an edge of the light, or
+// where the facet faces away from the lamp and only the smooth surface over it is lit. A concave surface
+// curving towards the lamp also ends rays a little before the plane, most of all where they graze it.
 int litFromMaps(int j, vec3 x, vec3 facet) {
   vec3 o = lampOrigin[j].xyz;
   vec3 d = x - o;
@@ -325,9 +326,9 @@ int litFromMaps(int j, vec3 x, vec3 facet) {
     vec3 dir = mapDirection(j, (vec2(texel) + 0.5) / size);
     float surface = min(texelFetch(uOccluder, origin + texel, 0).r, dir.y < 0.0 ? -o.y / dir.y : INF);
     float plane = height / dot(facet, dir);
-    if (surface < (1.0 - 1e-3) * plane) {
+    if (surface < 0.95 * plane) {
       stopped++;
-    } else if (surface < (1.0 + 1e-3) * plane) {
+    } else if (abs(surface - plane) < 1e-3 * plane) {
       onPlane++;
       // Whether the ray's light ended on its surface rather than before it.
       lit += int(texelFetch(uReach, origin + texel, 0).g < -1.5);

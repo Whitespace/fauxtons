@@ -25,7 +25,7 @@ float noise(float k) {
 float fogReach(int i, vec3 d) {
   float n = sceneParams.z;
   vec2 uv = clamp(mapUV(i, d), 0.5 / n, 1.0 - 0.5 / n);
-  return texture(uReach, (vec2(atlasOrigin(i)) + uv * n) / (2.0 * n)).r;
+  return texture(uReach, (vec2(atlasOrigin(i)) + uv * n) / (float(ATLAS_SIDE) * n)).r;
 }
 
 // Light lamp i puts into the air along the view ray, in its colour and with its field strength,

@@ -28,11 +28,11 @@ bool jumpsBetween(int i, ivec2 p, ivec2 axis) {
 
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
-  int n = MAP_SIZE / uStride;
-  int i = (px.x < n ? 0 : 1) + (px.y < n ? 0 : 2);
+  int i = atlasLamp(px, MAP_SIZE / uStride);
+  outOffset = vec2(0.0);
+  if (i < 0) return;
   ivec2 p = (px - gridOrigin(i, uStride)) * uStride;
   float ep = endDistance(uState, i, p);
-  outOffset = vec2(0.0);
 
   // The neighbouring grid points across a jump. Where they lie on both sides of this one, it sits on
   // a sliver narrower than the grid and stays put.

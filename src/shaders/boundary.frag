@@ -23,7 +23,7 @@ vec3 boundaryNormal(int i, vec3 x) {
   float t = length(d);
   vec3 dir = d / t;
   vec2 uv = clamp(mapUV(i, d), 0.5 / n, 1.0 - 0.5 / n);
-  vec2 slope = texture(uSlopes, (vec2(atlasOrigin(i)) + uv * n) / (2.0 * n)).rg;
+  vec2 slope = texture(uSlopes, (vec2(atlasOrigin(i)) + uv * n) / (float(ATLAS_SIDE) * n)).rg;
   vec3 right = lampRight[i].xyz;
   vec3 up = lampUp[i].xyz;
   // |v| for v = axis + s.x right + s.y up, and the change of s per texel.

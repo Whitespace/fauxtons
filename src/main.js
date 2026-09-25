@@ -23,18 +23,21 @@ async function main() {
     ...SHADER_FILES.map((name) => fetchText(`src/shaders/${name}`)),
   ]);
   const shaders = Object.fromEntries(SHADER_FILES.map((name, k) => [name, sources[k]]));
-  const renderer = new Renderer(gl, shaders, phongTessellate(parseObj(obj), SPOT_REFINEMENT));
+  // The lamps are inside Spot, so the sides of its walls that they light face inwards.
+  const mesh = phongTessellate(parseObj(obj), SPOT_REFINEMENT);
+  mesh.normals.forEach((value, k) => (mesh.normals[k] = -value));
+  const renderer = new Renderer(gl, shaders, mesh);
 
   const camera = new TurntableCamera(canvas, {
-    target: [0, 1.6, 0],
+    target: [0, 10.3, 0],
     azimuth: 202 * deg,
     elevation: 15 * deg,
-    distance: 14,
+    distance: 55,
     fovy: 40 * deg,
     minElevation: -3 * deg,
     maxElevation: 85 * deg,
     minDistance: 3,
-    maxDistance: 40,
+    maxDistance: 150,
   });
 
   // bounds: draw the boundaries of the lit volumes instead of the light in the air.

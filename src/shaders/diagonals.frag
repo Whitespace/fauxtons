@@ -10,8 +10,9 @@ out float outDiagonal;  // 1 to split the cell from (1, 0) to (0, 1), 0 from (0,
 
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
-  int n = MAP_SIZE / uStride;
-  int i = (px.x < n ? 0 : 1) + (px.y < n ? 0 : 2);
+  int i = atlasLamp(px, MAP_SIZE / uStride);
+  outDiagonal = 0.0;
+  if (i < 0) return;
   ivec2 g = px - gridOrigin(i, uStride);
   vec3 a = boundaryPoint(uEnds, uOffsets, i, g, uStride);
   vec3 b = boundaryPoint(uEnds, uOffsets, i, g + ivec2(1, 0), uStride);

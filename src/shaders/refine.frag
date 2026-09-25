@@ -9,7 +9,11 @@ out vec2 outState;
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
   int n = MAP_SIZE;
-  int i = (px.x < n ? 0 : 1) + (px.y < n ? 0 : 2);
+  int i = atlasLamp(px, n);
+  if (i < 0) {
+    outState = vec2(0.0, -1.0);
+    return;
+  }
   vec3 dir = mapDirection(i, (vec2(px - atlasOrigin(i)) + 0.5) / float(n));
   if (profile(i, dir) < P_MIN) {
     outState = vec2(0.0, -1.0);

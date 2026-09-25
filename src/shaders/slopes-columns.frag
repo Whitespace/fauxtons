@@ -10,10 +10,12 @@ out vec2 outSlope;
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
   int n = MAP_SIZE;
-  int i = (px.x < n ? 0 : 1) + (px.y < n ? 0 : 2);
+  int i = atlasLamp(px, n);
+  vec2 slope = vec2(0.0);
+  outSlope = slope;
+  if (i < 0) return;
   ivec2 lo = atlasOrigin(i);
   ivec2 hi = lo + ivec2(n - 1);
-  vec2 slope = vec2(0.0);
   for (int k = -SLOPE_RADIUS; k <= SLOPE_RADIUS; ++k) {
     vec2 rows = texelFetch(uRows, clamp(px + ivec2(0, k), lo, hi), 0).rg;
     vec2 w = slopeWeights(k);

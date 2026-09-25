@@ -2,21 +2,25 @@ import { buildBvh } from './bvh.js';
 import { bindTextures, createDataTexture, createDepthBuffer, createFramebuffer, createMesh, createProgram, createTexture } from './gl.js';
 import { IDENTITY, transformPoint } from './mat4.js';
 import { compareSurfacesWithReference, compareWithReference, createReference, sampleSurfaces } from './reference.js';
-import { GROUND_ALBEDO, LAMPS, MAP_SIZE, SPOT_ALBEDO, packLamps, spotModel } from './scene.js';
+import { ATLAS_SIDE, GROUND_ALBEDO, LAMPS, MAP_SIZE, SPOT_ALBEDO, packLamps, spotModel } from './scene.js';
 import { BOUNDARY_STRIDE, ExtinctionSolver, VEIL_STRIDE } from './solver.js';
 
-// Sweep passes per frame while a new solution is being solved: under 20 ms of work at any map size.
-const SWEEP_PASSES_PER_FRAME = Math.max(1, Math.round(96 * (1024 / MAP_SIZE) ** 2));
+// Sweep passes per frame while a new solution is being solved: under 20 ms of work at any map size and
+// number of lamps, as every ray of every map is checked against the other lamps' light.
+const LAMP_PAIRS = LAMPS.length * (LAMPS.length - 1);
+const SWEEP_PASSES_PER_FRAME = Math.max(1, Math.round(96 * (1024 / MAP_SIZE) ** 2 * (12 / LAMP_PAIRS)));
 const MAX_ACCUMULATED_FRAMES = 256;
 
+// Tuned for a Spot 2.4 tall with its lamps a few units away. Inside a Spot ten times larger, light
+// travels ten times as far through the air, and the sheets pass close to the lamps.
 const LOOK = {
   exposure: 1.1,
   ambient: 0.004,
-  fogDensity: 0.035,
+  fogDensity: 0.0035,
   veilOpacity: 0.06,
-  veilGain: 0.8,
+  veilGain: 0.08,
   boundaryOpacity: 0.06,
-  boundaryGain: 1,
+  boundaryGain: 0.1,
   lampRadius: 0.06,
   lampEmission: 4,
 };
@@ -68,8 +72,9 @@ export class Renderer {
     this.gl = gl;
 
     const plain = (name) => `#version 300 es\n${shaders[name]}`;
-    const shared = (name) => `#version 300 es\n${shaders['common.glsl']}\n${shaders[name]}`;
-    const exact = (name) => `#version 300 es\n${shaders['common.glsl']}\n${shaders['exact.glsl']}\n${shaders[name]}`;
+    const common = `#version 300 es\n#define LAMP_COUNT ${LAMPS.length}\n#define ATLAS_SIDE ${ATLAS_SIDE}\n${shaders['common.glsl']}`;
+    const shared = (name) => `${common}\n${shaders[name]}`;
+    const exact = (name) => `${common}\n${shaders['exact.glsl']}\n${shaders[name]}`;
     const program = (label, vertex, fragment) => createProgram(gl, label, vertex, fragment);
     this.programs = {
       occluder: program('occluder', plain('occluder.vert'), shared('occluder.frag')),

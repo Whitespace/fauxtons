@@ -22,8 +22,9 @@ float value(int i, ivec2 texel) {
 
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
-  int n = MAP_SIZE;
-  int i = (px.x < n ? 0 : 1) + (px.y < n ? 0 : 2);
+  int i = atlasLamp(px, MAP_SIZE);
+  outEnd = 0.0;
+  if (i < 0) return;
   ivec2 p = px - atlasOrigin(i);
   float sum = value(i, p);
   float weights = 1.0;
