@@ -222,11 +222,11 @@ async function main() {
 
     const moved = camera.update(Math.min((now - last) / 1000, 0.1));
     last = now;
-    renderer.render(camera, options, moved || !!optimizer);
+    // Frames stop being drawn once a still view has settled (Renderer.render).
+    if (renderer.render(camera, options, moved || !!optimizer)) frames++;
 
-    frames++;
     if (now - windowStart >= 500) {
-      fps.textContent = `${Math.round((frames * 1000) / (now - windowStart))} fps`;
+      fps.textContent = frames ? `${Math.round((frames * 1000) / (now - windowStart))} fps` : 'idle';
       frames = 0;
       windowStart = now;
     }

@@ -202,7 +202,9 @@ export class Renderer {
     return true;
   }
 
-  // `spot` shows Spot's surface; its walls still stop the light either way.
+  // `spot` shows Spot's surface; its walls still stop the light either way. Once MAX_ACCUMULATED_FRAMES
+  // frames of a still view are averaged, nothing more is drawn until something changes, though a sweep
+  // under way carries on. Returns whether a frame was drawn.
   render(camera, { spot, veil, bounds }, cameraMoved) {
     const { gl } = this;
     const width = gl.drawingBufferWidth;
@@ -216,6 +218,7 @@ export class Renderer {
     changed = spot !== this.shown.spot || veil !== this.shown.veil || bounds !== this.shown.bounds || changed;
     this.shown = { spot, veil, bounds };
     if (changed) this.accumulated = 0;
+    if (this.accumulated >= MAX_ACCUMULATED_FRAMES) return false;
     // Uniforms describe the lamps being solved for; while they are, frames show the lamps solved last.
     if (this.solver.busy && this.layout !== this.pendingLayout && this.layout) this.useLayoutUniforms(this.layout);
     this.solver.prepareDisplay({ veil, bounds });
@@ -239,6 +242,7 @@ export class Renderer {
 
     this.accumulated++;
     this.frame++;
+    return true;
   }
 
   useLayoutUniforms(layout) {
