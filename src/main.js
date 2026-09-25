@@ -1,5 +1,6 @@
 import { TurntableCamera } from './camera.js';
 import { clusterLayout } from './clusters.js';
+import { contrastColors } from './colors.js';
 import { createGeometry } from './geometry.js';
 import { phongTessellate } from './mesh.js';
 import { parseObj } from './obj.js';
@@ -81,14 +82,28 @@ async function main() {
   };
   const metricsOf = (m) => ({ dark: m.darkArea / m.totalArea, spread: m.spread, seams: m.seams, cost: m.cost });
 
-  // Shows a layout at full resolution and measures it.
-  const show = (next) => {
+  // Shows a layout at full resolution and measures it. Lamps without colours, and all of them with
+  // `recolor`, get colours that differ between patches that meet.
+  const show = (next, { recolor = false } = {}) => {
     layout = next;
     const described = createLayout(next.lamps);
     renderer.setLayout(described);
     renderer.solve();
-    layout.metrics = metricsOf(measure(samples, described.lamps, probe.run()));
+    const measured = measure(samples, described.lamps, probe.run());
+    layout.metrics = metricsOf(measured);
+    if (recolor || next.lamps.some((lamp) => !lamp.color)) {
+      const colors = contrastColors(samples, measured.owner, next.lamps.length);
+      next.lamps.forEach((lamp, i) => (lamp.color = colors[i]));
+      renderer.setColors(colors);
+    }
     readout.textContent = describe(layout.metrics);
+    return measured;
+  };
+
+  // Places `count` lamps afresh, in clusters where they can see most of Spot (clusters.js).
+  const placeLamps = (count) => {
+    places ??= interiorPlaces(samples, geometry);
+    show(clusterLayout({ renderer, samples, geometry, places, count }));
   };
 
   // The saved layout for `count` lamps if there is one, else lamps placed afresh in clusters.
@@ -108,9 +123,8 @@ async function main() {
     // Let the readout paint before the work.
     await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
     if (request !== loading) return;
-    places ??= interiorPlaces(samples, geometry);
-    next ??= clusterLayout({ renderer, samples, geometry, places, count });
-    show(next);
+    if (next) show(next);
+    else placeLamps(count);
   };
 
   const startOptimizing = () => {
@@ -125,14 +139,13 @@ async function main() {
     optimizer.dispose();
     optimizer = null;
     optimizeButton.setAttribute('aria-pressed', 'false');
-    if (keep && best) show(best);
+    if (keep && best) show(best, { recolor: true });
   }
   optimizeButton.addEventListener('click', () => (optimizer ? stopOptimizing() : startOptimizing()));
   countPicker.addEventListener('change', () => useCount(Number(countPicker.value)));
-  document.querySelector('[data-action="reset"]').addEventListener('click', async () => {
+  document.querySelector('[data-action="reset"]').addEventListener('click', () => {
     stopOptimizing(false);
-    places ??= interiorPlaces(samples, geometry);
-    show(clusterLayout({ renderer, samples, geometry, places, count: options.count }));
+    placeLamps(options.count);
   });
 
   const flash = (button, label, rest) => {
@@ -230,7 +243,7 @@ async function main() {
   window.fauxton = {
     check: (count, bounds) => renderer.check(count, bounds),
     checkSurfaces: (candidates, limit, step) => renderer.checkSurfaces(candidates, limit, step),
-    optimize: (rounds) => {
+    optimize: (rounds, settings = {}) => {
       stopOptimizing(false);
       if (batch && batch.base !== layout) {
         batch.dispose();
@@ -240,6 +253,7 @@ async function main() {
         batch = new LayoutOptimizer({ renderer, samples, geometry, layout });
         batch.base = layout;
       }
+      Object.assign(batch, settings);
       let record = null;
       for (let k = 0; k < rounds; k++) record = batch.iterate();
       const { measured, ...rest } = record;
@@ -250,7 +264,7 @@ async function main() {
       const best = batch.best.layout;
       batch.dispose();
       batch = null;
-      show(best);
+      show(best, { recolor: true });
       return layout.metrics;
     },
     layout: () => exportLayout(layout),

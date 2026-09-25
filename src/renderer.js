@@ -143,6 +143,14 @@ export class Renderer {
     this.sweepPassesPerFrame = Math.max(1, Math.round(96 * (1024 / layout.mapSize) ** 2 * (12 / Math.max(n * (n - 1), 1))));
   }
 
+  // New colours for the lamps of the layout shown, which leave its solution as it is.
+  setColors(colors) {
+    const layout = this.layout ?? this.pendingLayout;
+    layout.lamps.forEach((lamp, i) => (lamp.color = colors[i]));
+    this.useLayoutUniforms(layout);
+    this.accumulated = 0;
+  }
+
   // Solves the pending layout to the end at once.
   solve() {
     this.solver.step(Infinity);

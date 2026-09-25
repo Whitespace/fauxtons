@@ -346,6 +346,7 @@ export function measure(samples, lamps, lit) {
 
   // Seams: edges between vertices lit by different lamps, and the share of them where the brightness
   // jumps by more than a fifth: where the two lamps would light the edge's middle that differently.
+  // Steps that push the two to match there made patches less even without making seams smoother.
   let seamEdges = 0;
   let jumps = 0;
   const middle = [0, 0, 0];

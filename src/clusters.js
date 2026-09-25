@@ -23,33 +23,37 @@ const MAX_DISTANCE = 12;
 // A place nearer a wall than this counts for its share of it.
 const NEAR_WALL = 1;
 // Places stop being added once this share of the wall is lit well, or they would add less than
-// MIN_GAIN of it each, or there are a quarter as many places as lamps.
+// MIN_GAIN of it each, or there are a quarter as many places as lamps. Every place added makes seams
+// between its patches and the others', where the brightness jumps, so it has to be worth it: with 64
+// lamps, a fourth place adding 3% makes the lighting worse all round.
 const COVERED = 0.995;
-const MIN_GAIN = 0.002;
+const MIN_GAIN = 0.05;
 // Wall points judged, and how far out from its place each lamp sits.
 const TARGETS = 2048;
 const OFFSET = 0.2;
 
-export function clusterLayout({ renderer, samples, geometry, places, count }) {
+export function clusterLayout({ renderer, samples, geometry, places, count, maxClusters = Math.floor(count / 4), minCosine = MIN_COSINE }) {
   const targets = subsample(samples, TARGETS);
   const total = targets.areas.reduce((sum, a) => sum + a, 0);
   const covered = new Uint8Array(targets.count);
   const centers = [];
+  // How brightly a lamp at `center` could light wall point k, if well enough to count.
   const lights = (center, k) => {
     const x = targets.positions.subarray(3 * k, 3 * k + 3);
     const n = targets.normals.subarray(3 * k, 3 * k + 3);
     const d = [x[0] - center[0], x[1] - center[1], x[2] - center[2]];
     const r = Math.hypot(...d);
     const cosine = -(n[0] * d[0] + n[1] * d[1] + n[2] * d[2]) / r;
-    if (r < MIN_DISTANCE || r > MAX_DISTANCE || cosine < MIN_COSINE) return 0;
+    if (r < MIN_DISTANCE || r > MAX_DISTANCE || cosine < minCosine) return 0;
     if (geometry.raycast(center, d.map((v) => v / r), r * (1 - 1e-3)).distance < Infinity) return 0;
     return cosine / (r * r);
   };
-  const limit = Math.max(1, Math.floor(count / 4));
+  const limit = Math.max(1, maxClusters);
   let litArea = 0;
+  const gains = [];
   while (centers.length < limit && litArea < COVERED * total) {
     const open = [...covered.keys()].filter((k) => !covered[k]);
-    const seen = renderer.visibility(places, pick(targets, open), { minCosine: MIN_COSINE, minDistance: MIN_DISTANCE, maxDistance: MAX_DISTANCE });
+    const seen = renderer.visibility(places, pick(targets, open), { minCosine, minDistance: MIN_DISTANCE, maxDistance: MAX_DISTANCE });
     // Places near a wall count for less: their lamps would light that wall unevenly.
     seen.forEach((area, k) => (seen[k] = area * Math.min(1, places.clearance[k] / NEAR_WALL)));
     let best = 0;
@@ -57,12 +61,14 @@ export function clusterLayout({ renderer, samples, geometry, places, count }) {
     if (seen[best] < MIN_GAIN * total) break;
     const center = Array.from(places.subarray(3 * best, 3 * best + 3));
     centers.push(center);
+    const before = litArea;
     for (const k of open) {
       if (lights(center, k) > 0) {
         covered[k] = 1;
         litArea += targets.areas[k];
       }
     }
+    gains.push((litArea - before) / total);
   }
 
   // Each wall point goes to the place that lights it most brightly.
@@ -103,7 +109,7 @@ export function clusterLayout({ renderer, samples, geometry, places, count }) {
   // Powers in proportion to what each lamp's share of the wall needs, within the dimmer's range.
   const most = Math.max(...lamps.map((lamp) => lamp.power));
   for (const lamp of lamps) lamp.power = Math.max(DIMMEST * P_MAX, (P_MAX * lamp.power) / most);
-  return { lamps, centers, litArea: litArea / total };
+  return { lamps, centers, litArea: litArea / total, gains };
 }
 
 // Every `every`-th vertex, standing for the area of those skipped, so that at most `limit` remain.
