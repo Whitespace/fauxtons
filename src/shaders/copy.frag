@@ -9,5 +9,5 @@ layout(location = 1) out uint outPartner;  // the lamp whose veil the ray ended 
 void main() {
   vec2 state = texelFetch(uState, ivec2(gl_FragCoord.xy), 0).rg;
   outReach = state.r;
-  outPartner = uint(state.g + 1.0);
+  outPartner = uint(max(state.g + 1.0, 0.0));
 }

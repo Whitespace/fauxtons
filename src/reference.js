@@ -2,11 +2,14 @@
 // range, nothing occludes the segment, and at no point of j's ray before x is another lamp both
 // brighter and reached by its own light. Slow, but it makes an independent check of the sweep.
 
-import { MAP_SIZE, P_MIN, RANGE } from './scene.js';
+import { transformPoint } from './mat4.js';
+import { MAP_SIZE, P_MIN, RANGE, SURFACE_GAP } from './scene.js';
 
+// Light is tested at points this far apart along each ray, so stretches of other light shorter than
+// that can slip through.
 const STEP = 0.01;
 
-export function createReference(lamps, triangles) {
+export function createReference(lamps, triangles, step = STEP) {
   const bvh = triangles ? buildBvh(triangles) : null;
 
   function profile(lamp, wx, wy, wz) {
@@ -23,7 +26,8 @@ export function createReference(lamps, triangles) {
     return p >= P_MIN ? r / (lamp.sqrtPower * p) : Infinity;
   }
 
-  function reaches(j, x, y, z) {
+  // Spot is looked for up to `clear` short of the point (see litBy() in exact.glsl).
+  function reaches(j, x, y, z, clear = 0) {
     const lamp = lamps[j];
     const [ox, oy, oz] = lamp.position;
     const r = Math.hypot(x - ox, y - oy, z - oz);
@@ -31,27 +35,166 @@ export function createReference(lamps, triangles) {
     const wx = (x - ox) / r, wy = (y - oy) / r, wz = (z - oz) / r;
     const p = profile(lamp, wx, wy, wz);
     if (p < P_MIN) return false;
-    if (bvh?.occludes(ox, oy, oz, wx, wy, wz, r)) return false;
+    if (bvh?.occludes(ox, oy, oz, wx, wy, wz, r - clear)) return false;
 
     const speed = lamp.sqrtPower * p;
-    const n = Math.max(16, Math.ceil(r / STEP));
-    for (let s = 1; s < n; s++) {
-      const t = (r * s) / n;
+    const n = Math.max(16, Math.ceil(r / step));
+    const extinguishedAt = (t) => {
       const px = ox + t * wx, py = oy + t * wy, pz = oz + t * wz;
       for (let k = 0; k < lamps.length; k++) {
-        if (k !== j && fieldDistance(k, px, py, pz) < t / speed && reaches(k, px, py, pz)) return false;
+        if (k !== j && fieldDistance(k, px, py, pz) < t / speed && reaches(k, px, py, pz)) return true;
       }
+      return false;
+    };
+    for (let s = 1; s < n; s++) {
+      if (extinguishedAt((r * s) / n)) return false;
+    }
+    // Closer to x than the last step, halving the distance each time: light can be extinguished just
+    // before a surface, by light that passes over it.
+    for (let gap = r / n / 2; gap > 1e-6 * r; gap /= 2) {
+      if (extinguishedAt(r - gap)) return false;
     }
     return true;
   }
 
-  return { fieldDistance, reaches };
+  // The lamp whose light reaches the surface point x with unit normal n, or -1: of the lamps the surface
+  // faces, the strongest whose light gets as close to x as the renderer tests it (SURFACE_GAP), with the
+  // renderer's allowance `rough` for the facets straying from the smooth surface (litBy() in exact.glsl).
+  function litBy(x, n, rough = 0) {
+    const candidates = [];
+    lamps.forEach((lamp, i) => {
+      const d = [0, 1, 2].map((k) => x[k] - lamp.position[k]);
+      const r = Math.hypot(...d);
+      const cosine = -(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) / r;
+      const distance = fieldDistance(i, ...x);
+      if (distance < Infinity && cosine > 0) candidates.push({ i, distance, d, skip: Math.min(rough / Math.max(cosine, 1e-3), 30 * rough) });
+    });
+    candidates.sort((a, b) => a.distance - b.distance);
+    for (const { i, d, skip } of candidates) {
+      const p = [0, 1, 2].map((k) => lamps[i].position[k] + (1 - SURFACE_GAP) * d[k]);
+      const clear = Math.max(0, skip - SURFACE_GAP * Math.hypot(...d));
+      if (reaches(i, ...p, clear)) return i;
+    }
+    return -1;
+  }
+
+  return { fieldDistance, reaches, litBy };
 }
 
-// Compares the solver's published atlas with the reference at random points in the air.
-export function compareWithReference({ lamps, reference, atlas, samples, seed = 1 }) {
+// Random points on the ground within a few units of Spot and, if it is there, on Spot, as the surface
+// pass sees them (litBy() in exact.glsl): the point on a flat facet, the facet's normal and how far it
+// strays from the smooth surface, the point of the smooth surface over it where light is tested
+// (smoothPoint() in surface.frag) and that surface's normal, interpolated from the mesh's. Points on Spot
+// are spread by area.
+export function sampleSurfaces({ mesh, model, withSpot, count, seed = 1 }) {
   const random = mulberry32(seed);
-  const size = 2 * MAP_SIZE;
+  const positions = new Float32Array(3 * count);
+  const facets = new Float32Array(3 * count);
+  const roughness = new Float32Array(count);
+  const lifted = new Float32Array(3 * count);
+  const normals = new Float32Array(3 * count);
+  const { indices } = mesh;
+  const corner = (data, v) => data.subarray(3 * v, 3 * v + 3);
+  const world = (v) => transformPoint(model, corner(mesh.positions, v));
+  const areas = [];
+  let total = 0;
+  for (let t = 0; t < indices.length; t += 3) {
+    const [a, b, c] = [world(indices[t]), world(indices[t + 1]), world(indices[t + 2])];
+    const e1 = [0, 1, 2].map((k) => b[k] - a[k]);
+    const e2 = [0, 1, 2].map((k) => c[k] - a[k]);
+    total += Math.hypot(e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]);
+    areas.push(total);
+  }
+
+  for (let s = 0; s < count; s++) {
+    if (!withSpot || s % 2 === 0) {
+      const radius = 3 * Math.sqrt(random());
+      const angle = 2 * Math.PI * random();
+      const x = [radius * Math.cos(angle), 0, radius * Math.sin(angle)];
+      positions.set(x, 3 * s);
+      lifted.set(x, 3 * s);
+      for (const data of [facets, normals]) data.set([0, 1, 0], 3 * s);
+      continue;
+    }
+    const target = random() * total;
+    let lo = 0;
+    let hi = areas.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (areas[mid] < target) lo = mid + 1; else hi = mid;
+    }
+    let u = random();
+    let v = random();
+    if (u + v > 1) [u, v] = [1 - u, 1 - v];
+    const vertices = [0, 1, 2].map((k) => indices[3 * lo + k]);
+    const corners = vertices.map(world);
+    // The model matrix is a uniform scale and a translation, so it leaves directions alone.
+    const cornerNormals = vertices.map((vertex) => corner(mesh.normals, vertex));
+    const weights = [1 - u - v, u, v];
+    const blend = (values) => [0, 1, 2].map((k) => weights.reduce((sum, w, m) => sum + w * values[m][k], 0));
+    const x = blend(corners);
+    const up = [...x];
+    corners.forEach((c, m) => {
+      const n = cornerNormals[m];
+      const height = Math.min(0, (x[0] - c[0]) * n[0] + (x[1] - c[1]) * n[1] + (x[2] - c[2]) * n[2]);
+      for (let k = 0; k < 3; k++) up[k] -= weights[m] * height * n[k];
+    });
+    const n = normalized(blend(cornerNormals));
+    const e1 = [0, 1, 2].map((k) => corners[1][k] - corners[0][k]);
+    const e2 = [0, 1, 2].map((k) => corners[2][k] - corners[0][k]);
+    let facet = normalized([e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]]);
+    if (facet[0] * n[0] + facet[1] * n[1] + facet[2] * n[2] < 0) facet = facet.map((value) => -value);
+    positions.set(x, 3 * s);
+    facets.set(facet, 3 * s);
+    roughness[s] = 0.1 * Math.max(...[0, 1, 2].map((m) => Math.hypot(...[0, 1, 2].map((k) => corners[(m + 1) % 3][k] - corners[m][k]))));
+    lifted.set(up, 3 * s);
+    normals.set(n, 3 * s);
+  }
+  return { positions, facets, roughness, lifted, normals };
+}
+
+function normalized(v) {
+  const length = Math.hypot(...v);
+  return v.map((value) => value / length);
+}
+
+// Compares which lamp lights surface points, by the renderer (`lit`, from Renderer.probe) and by the
+// maps alone, with the reference. Points where the maps' rays disagree or the two methods differ are
+// the ones near an edge; up to `limit` of them are checked.
+export function compareSurfacesWithReference({ reference, points, lit, limit }) {
+  const count = points.positions.length / 3;
+  const nearEdges = [];
+  let differ = 0;
+  for (let s = 0; s < count; s++) {
+    const [exact, maps, mixed] = lit.subarray(4 * s, 4 * s + 3);
+    if (exact !== maps) differ++;
+    if (mixed || exact !== maps) nearEdges.push(s);
+  }
+  const checked = nearEdges.slice(0, limit);
+  const wrong = { exact: [], maps: [] };
+  for (const s of checked) {
+    const x = Array.from(points.lifted.subarray(3 * s, 3 * s + 3));
+    const n = Array.from(points.normals.subarray(3 * s, 3 * s + 3));
+    const truth = reference.litBy(x, n, points.roughness[s]);
+    const [exact, maps] = lit.subarray(4 * s, 4 * s + 2);
+    if (exact !== truth) wrong.exact.push({ point: x, normal: n, truth, got: exact, maps });
+    if (maps !== truth) wrong.maps.push({ point: x, truth, got: maps });
+  }
+  return {
+    candidates: count,
+    nearEdges: nearEdges.length,
+    differ,
+    checked: checked.length,
+    exactAgreement: 1 - wrong.exact.length / checked.length,
+    mapsAgreement: 1 - wrong.maps.length / checked.length,
+    exactWrong: wrong.exact.slice(0, 8),
+  };
+}
+
+// Compares the solver's published solution with the reference at random points in the air. `reachAt`
+// gives the distance at which the ray at an atlas texel ended.
+export function compareWithReference({ lamps, reference, reachAt, samples, seed = 1 }) {
+  const random = mulberry32(seed);
   let pairs = 0;
   const disagreements = [];
 
@@ -67,7 +210,7 @@ export function compareWithReference({ lamps, reference, atlas, samples, seed = 
       const v = 0.5 * (d[0] * lamp.up[0] + d[1] * lamp.up[1] + d[2] * lamp.up[2]) / (z * lamp.cutoffTan) + 0.5;
       const tx = Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(u * MAP_SIZE))) + (i & 1) * MAP_SIZE;
       const ty = Math.min(MAP_SIZE - 1, Math.max(0, Math.floor(v * MAP_SIZE))) + (i >> 1) * MAP_SIZE;
-      const reach = atlas[4 * (ty * size + tx)];
+      const reach = reachAt(tx, ty);
       const solver = r < reach;
       const exact = reference.reaches(i, ...x);
       if (solver !== exact) disagreements.push({ lamp: i, point: x, solver, exact, margin: Math.abs(r - reach) });

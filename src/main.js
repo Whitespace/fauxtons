@@ -1,6 +1,8 @@
 import { TurntableCamera } from './camera.js';
+import { phongTessellate } from './mesh.js';
 import { parseObj } from './obj.js';
 import { Renderer, SHADER_FILES } from './renderer.js';
+import { SPOT_REFINEMENT } from './scene.js';
 import { decodeView, encodeView } from './view-state.js';
 
 const deg = Math.PI / 180;
@@ -21,7 +23,7 @@ async function main() {
     ...SHADER_FILES.map((name) => fetchText(`src/shaders/${name}`)),
   ]);
   const shaders = Object.fromEntries(SHADER_FILES.map((name, k) => [name, sources[k]]));
-  const renderer = new Renderer(gl, shaders, parseObj(obj));
+  const renderer = new Renderer(gl, shaders, phongTessellate(parseObj(obj), SPOT_REFINEMENT));
 
   const camera = new TurntableCamera(canvas, {
     target: [0, 1.6, 0],
@@ -35,7 +37,8 @@ async function main() {
     maxDistance: 40,
   });
 
-  const options = { spot: true, veil: true };
+  // bounds: draw the boundaries of the lit volumes instead of the light in the air.
+  const options = { spot: true, veil: true, bounds: false };
   const toggles = new Map([...document.querySelectorAll('[data-toggle]')].map((button) => [button.dataset.toggle, button]));
   const setOption = (key, value) => {
     options[key] = value;
@@ -95,8 +98,12 @@ async function main() {
   }
   requestAnimationFrame(frame);
 
-  // Console hook: fauxton.check() compares the solution with the README's recursive definition.
-  window.fauxton = { check: (samples) => renderer.check(samples) };
+  // Console hooks comparing with the README's recursive definition: fauxton.check() the solution in the
+  // air, fauxton.checkSurfaces() which lamp lights the surfaces.
+  window.fauxton = {
+    check: (samples) => renderer.check(samples),
+    checkSurfaces: (candidates, limit, step) => renderer.checkSurfaces(candidates, limit, step),
+  };
 }
 
 main().catch((error) => {

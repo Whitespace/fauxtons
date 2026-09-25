@@ -28,41 +28,6 @@ float fogReach(int i, vec3 d) {
   return texture(uReach, (vec2(atlasOrigin(i)) + uv * n) / (2.0 * n)).r;
 }
 
-// Interval of the ray ro + t rd, t in [0, tMax], inside lamp i's cutoff cone and range ball.
-vec2 coneSpan(int i, vec3 ro, vec3 rd, float tMax) {
-  const vec2 EMPTY = vec2(INF, -INF);
-  vec3 a = lampAxis[i].xyz;
-  vec3 D = ro - lampOrigin[i].xyz;
-  float k = lampUp[i].w;
-  float av = dot(a, rd), aD = dot(a, D), vD = dot(rd, D), DD = dot(D, D);
-
-  float disc = vD * vD - DD + RANGE * RANGE;
-  if (disc <= 0.0) return EMPTY;
-  float t0 = max(0.0, -vD - sqrt(disc));
-  float t1 = min(tMax, -vD + sqrt(disc));
-
-  // (a·Δ)² ≥ k|Δ|² bounds both nappes of the cone; keep the one in front of the lamp.
-  float A = av * av - k;
-  float B = av * aD - k * vD;
-  float C = aD * aD - k * DD;
-  if (abs(A) < 1e-7) A = 1e-7;
-  float h = B * B - A * C;
-  if (h < 0.0 && A < 0.0) return EMPTY;
-  float s = sqrt(max(h, 0.0));
-  float lo = min((-B - s) / A, (-B + s) / A);
-  float hi = max((-B - s) / A, (-B + s) / A);
-  if (A < 0.0) {
-    if (aD + 0.5 * (lo + hi) * av < 0.0) return EMPTY;
-    t0 = max(t0, lo);
-    t1 = min(t1, hi);
-  } else if (av > 0.0) {
-    t0 = max(t0, hi);
-  } else {
-    t1 = min(t1, lo);
-  }
-  return vec2(t0, t1);
-}
-
 // Light lamp i puts into the air along the view ray, in its colour and with its field strength,
 // wherever that light is present. The 1/r² falloff is importance sampled (equiangular sampling
 // about the lamp), leaving p² and the presence test in the estimator.

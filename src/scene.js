@@ -5,9 +5,16 @@ export const RANGE = 18;
 export const P_MIN = 0.01;
 
 // Texels per side of each lamp's direction map.
-export const MAP_SIZE = 1024;
+export const MAP_SIZE = 2048;
+
+// How far short of a surface the renderer last tests whether a lamp's light gets there, relative to
+// the distance from the lamp (see exact.glsl): enough to clear the surface itself.
+export const SURFACE_GAP = 1e-4;
 
 export const SPOT_HEIGHT = 2.4;
+// Spot's triangles are several centimetres across, which shows in its outline and its shadows, so each
+// is split into SPOT_REFINEMENT² smaller ones on the smooth surface its normals describe (see mesh.js).
+export const SPOT_REFINEMENT = 4;
 export const SPOT_ALBEDO = [0.72, 0.7, 0.66];
 export const GROUND_ALBEDO = [0.36, 0.36, 0.37];
 
@@ -40,7 +47,7 @@ export function packLamps(lamps) {
     data.set([...lamp.up, lamp.cutoffCos2], 48 + 4 * i);
     data.set([...lamp.color, lamp.power], 64 + 4 * i);
   });
-  data.set([RANGE, P_MIN, MAP_SIZE, 0], 80);
+  data.set([RANGE, P_MIN, MAP_SIZE, SURFACE_GAP], 80);
   return data;
 }
 

@@ -3,7 +3,7 @@
 // so no decision at field-distance d depends on one made at a larger field-distance.
 
 uniform sampler2D uState;     // r: distance at which each ray's light ended (ALIVE while it travels)
-                              // g: the lamp whose veil it ended on, or -1
+                              // g: the lamp whose veil it ended on, -2 if it ended on a surface, else -1
 uniform sampler2D uOccluder;  // distance to the first occluder along each ray
 uniform float uTimePrev;
 uniform float uTime;
@@ -11,13 +11,13 @@ uniform float uTime;
 out vec2 outState;
 
 const float ALIVE = 1e30;
-const float MAX_BIAS = 0.005;    // cap on the reach tolerance, relative to distance
 const float SURFACE_GAP = 0.002; // how far short of an occluder, relatively, a ray last checks its light
 
 // Whether lamp j's light has reached y, which has field-distance dj for j. The reach of the 2×2 rays
 // around y is interpolated bilinearly, with a tolerance of its spread across them: where j's rays
 // meet a surface obliquely their reach changes quickly from ray to ray, and without it a surface
-// lit by j would read as unlit in places (shadow acne). The cap keeps silhouettes from dilating.
+// lit by j would read as unlit in places (shadow acne). The cap keeps the edges of j's light from
+// dilating.
 bool present(int j, vec3 y, float dj) {
   vec3 d = y - lampOrigin[j].xyz;
   float dist = length(d);
@@ -35,7 +35,7 @@ bool present(int j, vec3 y, float dj) {
   reach = min(reach, vec4(uTime * dist / dj));
   float spread = max(max(reach.x, reach.y), max(reach.z, reach.w)) - min(min(reach.x, reach.y), min(reach.z, reach.w));
   float interpolated = mix(mix(reach.x, reach.y, f.x), mix(reach.z, reach.w, f.x), f.y);
-  return dist < interpolated + min(spread, MAX_BIAS * dist);
+  return dist < interpolated + min(spread, REACH_TOLERANCE * dist);
 }
 
 // True when some other lamp's field is strictly stronger at y and its light has reached y.
@@ -93,7 +93,9 @@ void main() {
       if (extinguished(i, o + m * dir, m / speed)) b = m; else a = m;
     }
     outState = vec2(0.5 * (a + b), veilPartner(i, o + b * dir, b / speed));
+  } else if (uTime * speed >= stop) {
+    outState = vec2(stop, stop < RANGE ? -2.0 : -1.0);
   } else {
-    outState = vec2(uTime * speed >= stop ? stop : ALIVE, -1.0);
+    outState = vec2(ALIVE, -1.0);
   }
 }

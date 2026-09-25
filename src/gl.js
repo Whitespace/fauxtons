@@ -38,14 +38,25 @@ function annotate(log, source) {
   return log.replace(/ERROR: \d+:(\d+):(.*)/g, (match, line) => `${match}\n    > ${lines[line - 1]?.trim()}`);
 }
 
-export function createTexture(gl, width, height, internalFormat, filter = gl.NEAREST) {
+export function createTexture(gl, width, height, internalFormat, filter = gl.NEAREST, levels = 1) {
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texStorage2D(gl.TEXTURE_2D, 1, internalFormat, width, height);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texStorage2D(gl.TEXTURE_2D, levels, internalFormat, width, height);
+  // texelFetch() reads levels past the first only from a texture whose filter uses mipmaps.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, levels > 1 ? gl.NEAREST_MIPMAP_NEAREST : filter);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return texture;
+}
+
+// A float array as an RGBA32F texture, four floats per texel, row by row.
+export function createDataTexture(gl, data, width = 1024) {
+  const height = Math.ceil(data.length / (4 * width));
+  const padded = new Float32Array(4 * width * height);
+  padded.set(data);
+  const texture = createTexture(gl, width, height, gl.RGBA32F);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.FLOAT, padded);
   return texture;
 }
 
@@ -56,11 +67,11 @@ export function createDepthBuffer(gl, width, height) {
   return renderbuffer;
 }
 
-export function createFramebuffer(gl, colors, depth = null) {
+export function createFramebuffer(gl, colors, depth = null, level = 0) {
   const framebuffer = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
   colors.forEach((texture, k) => {
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + k, gl.TEXTURE_2D, texture, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + k, gl.TEXTURE_2D, texture, level);
   });
   if (depth) gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
   gl.drawBuffers(colors.map((_, k) => gl.COLOR_ATTACHMENT0 + k));
@@ -85,8 +96,9 @@ export function createMesh(gl, { positions, normals, indices }) {
   return { vao, count: indices.length, type: indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT };
 }
 
-export function bindTextures(gl, program, textures) {
-  Object.entries(textures).forEach(([name, texture], unit) => {
+export function bindTextures(gl, program, textures, firstUnit = 0) {
+  Object.entries(textures).forEach(([name, texture], k) => {
+    const unit = firstUnit + k;
     gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     if (program.uniforms[name]) gl.uniform1i(program.uniforms[name], unit);
