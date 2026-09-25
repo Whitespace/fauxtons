@@ -8,19 +8,25 @@ const ALIVE = 1e30;
 const STEP_RATIO = 1.03;
 const START_DISTANCE = 0.004;
 
+// Passes refining the sweep's solution ray by ray (see refine.frag). The first corrects rays whose light
+// ran into light the sweep stepped over; the second, rays whose light ran into light the first corrected.
+const REFINE_PASSES = 2;
+
 // Map texels between neighbouring vertices of the veil meshes (see cells.frag) and of the lit volumes'
 // boundary meshes (see boundary.vert).
 export const VEIL_STRIDE = 8;
 export const BOUNDARY_STRIDE = 1;
 
-// Solves where each lamp's light ends along every direction of its map by sweeping all rays
-// outward in increasing field-distance. The result is an atlas of distances, one map per lamp.
+// Solves where each lamp's light ends along every direction of its map by sweeping all rays outward in
+// increasing field-distance, then following each ray exactly against the others' light (exact.glsl).
+// The result is an atlas of distances, one map per lamp. `bvh` holds Spot's triangles (bvh.js).
 export class ExtinctionSolver {
-  constructor(gl, { programs, fullscreen, spot, lamps }) {
+  constructor(gl, { programs, fullscreen, spot, bvh, lamps }) {
     this.gl = gl;
     this.programs = programs;
     this.fullscreen = fullscreen;
     this.spot = spot;
+    this.bvh = bvh;
     this.lamps = lamps;
     this.size = 2 * MAP_SIZE;
 
@@ -153,25 +159,54 @@ export class ExtinctionSolver {
     this.publishedOccluder = this.solving;
     this.withSpot = this.pendingSpot;
 
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    this.prepareBounds();
+    for (let n = 0; n < REFINE_PASSES; n++) this.refine();
 
     const copy = this.programs.copy;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.copyFbo);
+    gl.viewport(0, 0, size, size);
     gl.useProgram(copy.program);
-    gl.uniform1i(copy.uniforms.uState, 0);
+    bindTextures(gl, copy, { uState: this.texture });
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     const cells = this.programs.cells;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.cellsFbo);
     gl.viewport(0, 0, size / VEIL_STRIDE, size / VEIL_STRIDE);
     gl.useProgram(cells.program);
-    gl.uniform1i(cells.uniforms.uState, 0);
+    bindTextures(gl, cells, { uState: this.texture });
     gl.uniform1i(cells.uniforms.uStride, VEIL_STRIDE);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     this.prepareBoundaries();
-    this.prepareBounds();
     return true;
+  }
+
+  // What the exact tests of exact.glsl read, on the first five texture units, for a program using them.
+  bindExact(program) {
+    bindTextures(this.gl, program, {
+      uReach: this.texture,
+      uOccluder: this.occluder,
+      uReachBounds: this.bounds,
+      uBvhNodes: this.bvh.nodes,
+      uBvhTriangles: this.bvh.triangles,
+    });
+    this.gl.uniform1i(program.uniforms.uSpot, this.withSpot ? 1 : 0);
+  }
+
+  // One pass refining the published solution ray by ray (see refine.frag), into a work texture that is
+  // then published, with the bounds of its reach.
+  refine() {
+    const { gl, size } = this;
+    const refine = this.programs.refine;
+    const target = this.work[0];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbos[target]);
+    gl.viewport(0, 0, size, size);
+    gl.useProgram(refine.program);
+    this.bindExact(refine);
+    gl.bindVertexArray(this.fullscreen);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    [this.published, this.work[0]] = [target, this.published];
+    this.prepareBounds();
   }
 
   // The bounds of the reach over blocks of each map, level by level. While a level is drawn, the

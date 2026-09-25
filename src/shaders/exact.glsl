@@ -6,17 +6,17 @@
 //   map: in large steps where the map is clear, and point by point where the map's rays disagree. At
 //   those points, whether Spot is in the way of that lamp's light is tested against the triangles too.
 // So Spot's shadows are exact, both a lamp's own and those of other lamps' light that its light runs
-// into. Where another lamp's light ends in the air is still read from its map.
+// into. Where another lamp's light ends in the air is read from its map.
 //
-// The test is run once per solution for every ray of the maps that ends on a surface (lit.frag), and
-// per pixel only near the edges of the light, where those rays disagree (litFromMaps()).
+// The same search refines every ray of the maps after the sweep (refine.frag), so the maps carry the
+// exact end of the light along their rays. Surfaces then run the test per pixel only near the edges of
+// the light, where the rays around a point disagree (litFromMaps()).
 
 uniform sampler2D uReach;        // per ray of the maps, where its light ended and why (sweep.frag)
 uniform sampler2D uOccluder;     // per ray of the maps, the distance to Spot
 uniform sampler2D uReachBounds;  // bounds of the reach over blocks of the maps (reach-bounds.frag)
 uniform sampler2D uBvhNodes;     // Spot's bounding volume hierarchy (bvh.js)
 uniform sampler2D uBvhTriangles;
-uniform sampler2D uLit;          // per ray of the maps, whether its light reaches its surface (lit.frag)
 uniform bool uSpot;              // whether Spot is in the scene
 
 #define SURFACE_GAP sceneParams.w
@@ -137,12 +137,13 @@ vec2 reachBounds(int k, ivec2 block, int level) {
   return bounds;
 }
 
-// Whether lamp k's light is present anywhere on the ray o + t w with ta < t < tb. The ray is followed
-// through k's map a block of cells at a time: where every ray at the block's corners ends before the
-// stretch of this ray inside the block, k's light isn't there, and where every one reaches past it, it
-// is. Other blocks are split, down to single cells, which are decided at both ends of the stretch
-// inside them. Light of k is missed only where it slips between the rays of the map altogether.
-bool presentAlong(int k, vec3 o, vec3 w, float ta, float tb) {
+// A point of the ray o + t w with ta < t < tb where lamp k's light is present, the first if `first`, or
+// INF if there is none. The ray is followed through k's map a block of cells at a time: where every ray
+// at the block's corners ends before the stretch of this ray inside the block, k's light isn't there,
+// and where every one reaches past it, it is. Other blocks are split, down to single cells, which are
+// decided exactly at the ends of the stretch inside them, and by bisection where k's light starts
+// inside. Light of k is missed only where it slips between the rays of the map altogether.
+float presentFrom(int k, vec3 o, vec3 w, float ta, float tb, bool first) {
   vec3 lamp = lampOrigin[k].xyz;
   float size = sceneParams.z;
   vec3 D = o - lamp;
@@ -159,7 +160,9 @@ bool presentAlong(int k, vec3 o, vec3 w, float ta, float tb) {
   int top = int(round(log2(size)));
   int level = 4;
   float t = ta;
-  float decided = ta;
+  // The last point where k's light was found missing. Only the first point needs the start of the
+  // stretch looked at: any other is found inside it as well.
+  float decided = first ? -1.0 : ta;
   for (int step = 0; step < 1024 && t < tb; ++step) {
     float cells = exp2(float(level));
     vec2 st = scale * (s0 + t * s1) / (z0 + t * z1) + shift;
@@ -171,27 +174,36 @@ bool presentAlong(int k, vec3 o, vec3 w, float ta, float tb) {
     if (motion.x != 0.0 && exits.x > t) exit = min(exit, exits.x);
     if (motion.y != 0.0 && exits.y > t) exit = min(exit, exits.y);
     // Distances from k's lamp along this stretch of the ray.
-    float first = distance(o + t * w, lamp);
-    float last = distance(o + exit * w, lamp);
-    float nearest = closest > t && closest < exit ? distance(o + closest * w, lamp) : min(first, last);
+    float enter = distance(o + t * w, lamp);
+    float leave = distance(o + exit * w, lamp);
+    float nearest = closest > t && closest < exit ? distance(o + closest * w, lamp) : min(enter, leave);
     vec2 bounds = reachBounds(k, ivec2(block), level);
     if (nearest * (1.0 - REACH_TOLERANCE) > bounds.y) {
       t = exit;
       level = min(level + 1, top);
-    } else if (max(first, last) < bounds.x) {
-      return true;
+    } else if (max(enter, leave) < bounds.x) {
+      return t;
     } else if (level > 0) {
       level--;
     } else {
       // The start of the stretch is decided already when a cell follows one decided at its end.
-      if (t > decided && presentAt(k, o + t * w)) return true;
-      if (presentAt(k, o + exit * w)) return true;
+      if (t > decided && presentAt(k, o + t * w)) return t;
+      if (presentAt(k, o + exit * w)) {
+        if (!first) return exit;
+        float lo = t;
+        float hi = exit;
+        for (int n = 0; n < 12; ++n) {
+          float m = 0.5 * (lo + hi);
+          if (presentAt(k, o + m * w)) hi = m; else lo = m;
+        }
+        return hi;
+      }
       t = exit;
       decided = exit;
       level = 1;
     }
   }
-  return false;
+  return INF;
 }
 
 // How much stronger lamp k's field is than lamp j's at distance t along j's ray, as the difference of
@@ -224,22 +236,27 @@ float leadTurn(int k, vec3 o, vec3 w, float speed, float a, float b) {
   return 0.5 * (a + b);
 }
 
-// Whether the light of lamp j, travelling from its lamp along the unit direction w, runs into the light
-// of a lamp with a stronger field before distance tEnd. The stretches of the ray where another lamp's
-// field is the stronger are found by sampling the lead along the ray and refining by bisection,
-// including brief ones where the ray just grazes the other lamp's side of their isolux veil.
-bool extinguishedAlong(int j, vec3 w, float tEnd) {
+// Where the light of lamp j, travelling from its lamp along the unit direction w, runs into the light of
+// a lamp with a stronger field before distance tEnd: the first such point if `first`, else any, and INF
+// if there is none. `partner` is that lamp where the two meet head on, at their isolux veil, else -1.
+// The stretches of the ray where another lamp's field is the stronger are found by sampling the lead
+// along the ray and refining by bisection, including brief ones where the ray just grazes the other
+// lamp's side of their isolux veil.
+float extinction(int j, vec3 w, float tEnd, bool first, out int partner) {
   vec3 o = lampOrigin[j].xyz;
   float speed = lampOrigin[j].w * profile(j, w);
+  float best = INF;
+  partner = -1;
   for (int k = 0; k < LAMP_COUNT; ++k) {
     if (k == j) continue;
-    vec2 span = coneSpan(k, o, w, tEnd);
+    vec2 span = coneSpan(k, o, w, min(tEnd, best));
     if (span.x >= span.y) continue;
     float h = (span.y - span.x) / float(LEAD_SAMPLES);
     float a = span.x;
     float slopeA = leadSlope(k, o, w, speed, a);
     float start = lead(k, o, w, speed, a) > 0.0 ? a : -1.0;  // start of the open stretch, if any
-    for (int n = 1; n <= LEAD_SAMPLES; ++n) {
+    float found = INF;
+    for (int n = 1; n <= LEAD_SAMPLES && found >= INF; ++n) {
       float b = span.x + float(n) * h;
       float leadB = lead(k, o, w, speed, b);
       float slopeB = leadSlope(k, o, w, speed, b);
@@ -248,27 +265,32 @@ bool extinguishedAlong(int j, vec3 w, float tEnd) {
           start = leadEdge(k, o, w, speed, b, a);
         } else if (slopeA > 0.0 && slopeB < 0.0) {
           float peak = leadTurn(k, o, w, speed, a, b);
-          if (lead(k, o, w, speed, peak) > 0.0 &&
-              presentAlong(k, o, w, leadEdge(k, o, w, speed, peak, a), leadEdge(k, o, w, speed, peak, b))) {
-            return true;
+          if (lead(k, o, w, speed, peak) > 0.0) {
+            float from = leadEdge(k, o, w, speed, peak, a);
+            found = presentFrom(k, o, w, from, leadEdge(k, o, w, speed, peak, b), first);
           }
         }
       } else if (leadB <= 0.0) {
-        if (presentAlong(k, o, w, start, leadEdge(k, o, w, speed, a, b))) return true;
+        found = presentFrom(k, o, w, start, leadEdge(k, o, w, speed, a, b), first);
         start = -1.0;
       } else if (slopeA < 0.0 && slopeB > 0.0) {
         float dip = leadTurn(k, o, w, speed, a, b);
         if (lead(k, o, w, speed, dip) <= 0.0) {
-          if (presentAlong(k, o, w, start, leadEdge(k, o, w, speed, a, dip))) return true;
+          found = presentFrom(k, o, w, start, leadEdge(k, o, w, speed, a, dip), first);
           start = leadEdge(k, o, w, speed, b, dip);
         }
       }
       a = b;
       slopeA = slopeB;
     }
-    if (start >= 0.0 && presentAlong(k, o, w, start, span.y)) return true;
+    if (found >= INF && start >= 0.0) found = presentFrom(k, o, w, start, span.y, first);
+    if (found < best) {
+      best = found;
+      partner = fieldDistance(k, o + found * w) > (1.0 - 2e-3) * found / speed ? k : -1;
+      if (!first) return best;
+    }
   }
-  return false;
+  return best;
 }
 
 // Whether lamp j's light reaches the surface point x, which must be in its cone and range. Spot is
@@ -279,11 +301,12 @@ bool reachesExact(int j, vec3 x, float skip) {
   float dist = length(d);
   vec3 w = d / dist;
   float end = (1.0 - SURFACE_GAP) * dist;
-  return !spotBlocks(o, w, min(end, dist - skip)) && !extinguishedAlong(j, w, end);
+  int partner;
+  return !spotBlocks(o, w, min(end, dist - skip)) && extinction(j, w, end, false, partner) >= INF;
 }
 
 // Whether lamp j's light reaches the point x of a flat facet with normal `facet`, as far as the four
-// rays of its map around x tell (lit.frag): 1 or 0 where they all end on the facet's plane and agree,
+// rays of its map around x tell (refine.frag): 1 or 0 where they all end on the facet's plane and agree,
 // 0 where all of them end on a surface before it, and -1 otherwise: near an edge of the light, or where
 // the facet faces away from the lamp and only the smooth surface over it is lit.
 int litFromMaps(int j, vec3 x, vec3 facet) {
@@ -306,7 +329,8 @@ int litFromMaps(int j, vec3 x, vec3 facet) {
       stopped++;
     } else if (surface < (1.0 + 1e-3) * plane) {
       onPlane++;
-      lit += int(texelFetch(uLit, origin + texel, 0).r > 0.5);
+      // Whether the ray's light ended on its surface rather than before it.
+      lit += int(texelFetch(uReach, origin + texel, 0).g < -1.5);
     }
   }
   if (stopped == 4) return 0;

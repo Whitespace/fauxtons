@@ -1,5 +1,5 @@
 // Bounds of the reach over blocks of every lamp's map, for following a ray through a map in large steps
-// (presentAlong() in exact.glsl). A cell is the square between four neighbouring rays of a map; level L
+// (presentFrom() in exact.glsl). A cell is the square between four neighbouring rays of a map; level L
 // has one texel per block of 2^L × 2^L cells, holding the least and greatest reach of the (2^L + 1)² rays
 // at their corners. The first level is made from the solution, each further one from the level below.
 

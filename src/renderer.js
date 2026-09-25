@@ -46,7 +46,7 @@ export const SHADER_FILES = [
   'snap.frag',
   'diagonals.frag',
   'reach-bounds.frag',
-  'lit.frag',
+  'refine.frag',
   'surface.vert',
   'surface.frag',
   'probe.frag',
@@ -82,7 +82,7 @@ export class Renderer {
       snap: program('snap', plain('fullscreen.vert'), shared('snap.frag')),
       diagonals: program('diagonals', plain('fullscreen.vert'), shared('diagonals.frag')),
       reachBounds: program('reach-bounds', plain('fullscreen.vert'), shared('reach-bounds.frag')),
-      lit: program('lit', plain('fullscreen.vert'), exact('lit.frag')),
+      refine: program('refine', plain('fullscreen.vert'), exact('refine.frag')),
       surface: program('surface', plain('surface.vert'), exact('surface.frag')),
       probe: program('probe', plain('fullscreen.vert'), exact('probe.frag')),
       veil: program('veil', shared('veil.vert'), shared('veil.frag')),
@@ -114,15 +114,11 @@ export class Renderer {
       programs: this.programs,
       fullscreen: this.fullscreen,
       spot: this.spot,
+      bvh: this.bvh,
       lamps: LAMPS,
     });
-    // Per ray of the maps, whether its light reaches the surface where it ends (see lit.frag).
-    this.lit = createTexture(gl, 2 * MAP_SIZE, 2 * MAP_SIZE, gl.R8);
-    this.litFbo = createFramebuffer(gl, [this.lit]);
-
     this.solver.start(true);
     this.solver.step(Infinity);
-    this.prepareLit();
 
     this.frame = 0;
     this.accumulated = 0;
@@ -172,10 +168,7 @@ export class Renderer {
     let changed = this.resize(width, height) || cameraMoved;
 
     if (spot !== this.solver.pendingSpot) this.solver.start(spot);
-    if (this.solver.step(SWEEP_PASSES_PER_FRAME)) {
-      this.prepareLit();
-      changed = true;
-    }
+    changed = this.solver.step(SWEEP_PASSES_PER_FRAME) || changed;
     changed = veil !== this.shown.veil || bounds !== this.shown.bounds || changed;
     this.shown = { veil, bounds };
     if (changed) this.accumulated = 0;
@@ -213,7 +206,7 @@ export class Renderer {
     gl.uniformMatrix4fv(uniforms.uViewProj, false, view.viewProj);
     gl.uniform3fv(uniforms.uCameraPos, view.eye);
     gl.uniform1f(uniforms.uAmbient, LOOK.ambient);
-    this.bindExact(this.programs.surface);
+    this.solver.bindExact(this.programs.surface);
 
     gl.uniformMatrix4fv(uniforms.uModel, false, IDENTITY);
     gl.uniform3fv(uniforms.uAlbedo, GROUND_ALBEDO);
@@ -226,32 +219,6 @@ export class Renderer {
       gl.drawArrays(gl.TRIANGLES, 0, this.spotFacets.count);
     }
     gl.disable(gl.DEPTH_TEST);
-  }
-
-  // What the exact tests of exact.glsl read, on the first six texture units, for a program using them.
-  bindExact(program) {
-    const { gl, solver } = this;
-    bindTextures(gl, program, {
-      uReach: solver.texture,
-      uOccluder: solver.occluder,
-      uReachBounds: solver.bounds,
-      uBvhNodes: this.bvh.nodes,
-      uBvhTriangles: this.bvh.triangles,
-      uLit: this.lit,
-    });
-    gl.uniform1i(program.uniforms.uSpot, solver.withSpot ? 1 : 0);
-  }
-
-  // For every ray of the maps that ends on a surface, whether its light gets there (lit.frag).
-  prepareLit() {
-    const { gl } = this;
-    const lit = this.programs.lit;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.litFbo);
-    gl.viewport(0, 0, 2 * MAP_SIZE, 2 * MAP_SIZE);
-    gl.useProgram(lit.program);
-    this.bindExact(lit);
-    gl.bindVertexArray(this.fullscreen);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   // Adds the veil sheets over the surfaces, hidden where a surface is in front of them.
@@ -414,8 +381,8 @@ export class Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.viewport(0, 0, width, height);
     gl.useProgram(probe.program);
-    this.bindExact(probe);
-    bindTextures(gl, probe, inputs, 6);
+    this.solver.bindExact(probe);
+    bindTextures(gl, probe, inputs, 5);
     gl.bindVertexArray(this.fullscreen);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     const result = new Float32Array(4 * width * height);
