@@ -1,0 +1,6 @@
+[tools]
+node = "26"
+
+[tasks.dev]
+description = "Serve the renderer at http://localhost:8000"
+run = "node tools/serve.mjs"
