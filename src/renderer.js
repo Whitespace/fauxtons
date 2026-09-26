@@ -2,10 +2,14 @@ import { buildBvh } from './bvh.js';
 import { bindTextures, createDataTexture, createDepthBuffer, createFramebuffer, createMesh, createProgram, createTexture } from './gl.js';
 import { IDENTITY, transformPoint } from './mat4.js';
 import { compareSurfacesWithReference, compareWithReference, createReference, sampleSurfaces } from './reference.js';
-import { GROUND_ALBEDO, LAMP_CAPACITY, SPOT_ALBEDO, packLamps, spotModel } from './scene.js';
+import { GROUND_ALBEDO, LAMP_CAPACITY, SPOT_ALBEDO, packLamps } from './scene.js';
 import { BOUNDARY_STRIDE, ExtinctionSolver, VEIL_STRIDE } from './solver.js';
 
 const MAX_ACCUMULATED_FRAMES = 256;
+const WALL_FRAMES = 16;
+// Rows of pixels the walls are found for in one draw, as a draw that runs for more than a second or so
+// loses the WebGL context.
+const WALL_BAND = 64;
 
 // Tuned for a Spot 2.4 tall with its lamps a few units away. Inside a Spot ten times larger, light
 // travels ten times as far through the air, and the sheets pass close to the lamps.
@@ -55,6 +59,9 @@ export const SHADER_FILES = [
   'veil.frag',
   'boundary.vert',
   'boundary.frag',
+  'camera-light.frag',
+  'shell.frag',
+  'walls.frag',
   'fog.frag',
   'composite.frag',
   'present.frag',
@@ -62,9 +69,10 @@ export const SHADER_FILES = [
 
 // Per frame: surfaces and veils at full resolution, light in the air at half resolution (or instead
 // the boundaries of the lit volumes), a composite that upsamples the fog and averages frames while
-// the view is still, and tone mapping.
+// the view is still, and tone mapping. The scene's surface is `mesh`, placed in the world by `model`;
+// it is called Spot here, as it mostly is.
 export class Renderer {
-  constructor(gl, shaders, mesh, layout) {
+  constructor(gl, shaders, mesh, model, layout) {
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('This browser cannot render to float textures.');
     this.gl = gl;
 
@@ -74,7 +82,7 @@ export class Renderer {
     const exact = (name) => `${common}\n${shaders['exact.glsl']}\n${shaders[name]}`;
     const program = (label, vertex, fragment) => createProgram(gl, label, vertex, fragment);
     this.programs = {
-      occluder: program('occluder', plain('occluder.vert'), shared('occluder.frag')),
+      occluder: program('occluder', shared('occluder.vert'), shared('occluder.frag')),
       sweep: program('sweep', plain('fullscreen.vert'), shared('sweep.frag')),
       copy: program('copy', plain('fullscreen.vert'), shared('copy.frag')),
       cells: program('cells', plain('fullscreen.vert'), shared('cells.frag')),
@@ -90,6 +98,9 @@ export class Renderer {
       visibility: program('visibility', plain('fullscreen.vert'), exact('visibility.frag')),
       veil: program('veil', shared('veil.vert'), shared('veil.frag')),
       boundary: program('boundary', shared('boundary.vert'), shared('boundary.frag')),
+      cameraLight: program('camera-light', plain('fullscreen.vert'), exact('camera-light.frag')),
+      shell: program('shell', plain('surface.vert'), shared('shell.frag')),
+      walls: program('walls', plain('fullscreen.vert'), exact('walls.frag')),
       fog: program('fog', plain('fullscreen.vert'), shared('fog.frag')),
       composite: program('composite', plain('fullscreen.vert'), shared('composite.frag')),
       present: program('present', plain('fullscreen.vert'), shared('present.frag')),
@@ -102,21 +113,44 @@ export class Renderer {
 
     this.mesh = mesh;
     this.fullscreen = gl.createVertexArray();
-    this.spot = { ...createMesh(gl, mesh), model: spotModel(mesh.bounds) };
+    this.spot = { model };
     this.spotFacets = createFacets(gl, mesh);
     this.spotTriangles = worldTriangles(mesh, this.spot.model);
-    const bvh = buildBvh(this.spotTriangles);
-    this.bvh = { nodes: createDataTexture(gl, bvh.nodes), triangles: createDataTexture(gl, bvh.triangles) };
+    const bvh = buildBvh(this.spotTriangles, cornerNormals(mesh));
+    this.bvh = {
+      nodes: createDataTexture(gl, bvh.nodes),
+      triangles: createDataTexture(gl, bvh.triangles),
+      normals: createDataTexture(gl, bvh.normals),
+      count: bvh.triangles.length / 12,
+    };
     this.ground = createMesh(gl, {
       positions: new Float32Array([-40, 0, -40, 40, 0, -40, 40, 0, 40, -40, 0, 40]),
       normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]),
       indices: new Uint32Array([0, 2, 1, 0, 3, 2]),
     });
 
+    // The lamp whose light the camera is in, for the walls (walls.frag).
+    const cameraLight = createTexture(gl, 1, 1, gl.R32F);
+    this.cameraLight = { texture: cameraLight, fbo: createFramebuffer(gl, [cameraLight]) };
+
     this.frame = 0;
     this.accumulated = 0;
-    this.shown = { spot: true, veil: true, bounds: false };
+    this.shown = { spot: true, veil: true, bounds: false, opaque: false, opaque2: false, cull: false };
+    this.diffused = null;
+    this.diffusedTexture = createDataTexture(gl, new Float32Array(4), 1);
     this.setLayout(layout);
+  }
+
+  // Shows Spot lit by the light leaving its shell (diffusion.js) rather than the light arriving: `owner`,
+  // each vertex's cell, and `light`, the light leaving it, for the layout shown. Null goes back.
+  setDiffusion(diffused) {
+    const { gl } = this;
+    gl.deleteTexture(this.diffusedTexture);
+    const data = new Float32Array(4 * (diffused?.owner.length ?? 1));
+    diffused?.owner.forEach((cell, v) => data.set([cell, diffused.light[v]], 4 * v));
+    this.diffusedTexture = createDataTexture(gl, data);
+    this.diffused = diffused;
+    this.accumulated = 0;
   }
 
   // Solves for new lamps, keeping the atlas of maps if it has the same shape. Until the new solution is
@@ -131,7 +165,6 @@ export class Renderer {
       this.solver = new ExtinctionSolver(gl, {
         programs: this.programs,
         fullscreen: this.fullscreen,
-        spot: this.spot,
         bvh: this.bvh,
         layout,
       });
@@ -173,7 +206,7 @@ export class Renderer {
     this.height = height;
     for (const texture of this.targets?.textures ?? []) gl.deleteTexture(texture);
     for (const fbo of this.targets?.fbos ?? []) gl.deleteFramebuffer(fbo);
-    if (this.targets) gl.deleteRenderbuffer(this.targets.depth);
+    for (const renderbuffer of this.targets?.renderbuffers ?? []) gl.deleteRenderbuffer(renderbuffer);
 
     const halfSize = [Math.ceil(width / 2), Math.ceil(height / 2)];
     const color = createTexture(gl, width, height, gl.RGBA16F);
@@ -185,6 +218,17 @@ export class Renderer {
     const veils = createFramebuffer(gl, [color], depth);
     const fogFbo = createFramebuffer(gl, [fog]);
     const history = accumulation.map((texture) => createFramebuffer(gl, [texture]));
+    // The solid walls (walls.frag), and where the view first meets Spot's surface for them (shell.frag).
+    const wallColor = createTexture(gl, width, height, gl.RGBA16F);
+    const wallDistance = createTexture(gl, width, height, gl.R32F);
+    const walls = createFramebuffer(gl, [wallColor, wallDistance]);
+    const shell = createTexture(gl, width, height, gl.RG32F);
+    const shellDepth = createDepthBuffer(gl, width, height);
+    const shellFbo = createFramebuffer(gl, [shell], shellDepth);
+    // For Backface culling, the lamp owning the surface in view at each pixel (drawOwners()); the solid
+    // walls, which never cull, share its depth buffer.
+    const owners = createTexture(gl, width, height, gl.R16F);
+    const ownersFbo = createFramebuffer(gl, [owners], shellDepth);
     this.targets = {
       color,
       distance,
@@ -196,16 +240,27 @@ export class Renderer {
       fogFbo,
       accumulation,
       history,
-      textures: [color, distance, fog, ...accumulation],
-      fbos: [scene, veils, fogFbo, ...history],
+      wallColor,
+      wallDistance,
+      walls,
+      shell,
+      shellFbo,
+      owners,
+      ownersFbo,
+      textures: [color, distance, fog, ...accumulation, wallColor, wallDistance, shell, owners],
+      fbos: [scene, veils, fogFbo, ...history, walls, shellFbo, ownersFbo],
+      renderbuffers: [depth, shellDepth],
     };
     return true;
   }
 
-  // `spot` shows Spot's surface; its walls still stop the light either way. Once MAX_ACCUMULATED_FRAMES
-  // frames of a still view are averaged, nothing more is drawn until something changes, though a sweep
-  // under way carries on. Returns whether a frame was drawn.
-  render(camera, { spot, veil, bounds }, cameraMoved) {
+  // `spot` shows Spot's surface; its walls still stop the light either way. `opaque` draws the veils and
+  // boundaries as solid sheets, and `opaque2` draws them solid from the boundary meshes, which wins if
+  // both are on. `cull` shows only the cell each pixel's view meets first: its light in the air, or its
+  // glowing sheets. Once
+  // MAX_ACCUMULATED_FRAMES frames of a still view are averaged, nothing more is drawn until something
+  // changes, though a sweep under way carries on. Returns whether a frame was drawn.
+  render(camera, { spot, veil, bounds, opaque, opaque2, cull }, cameraMoved) {
     const { gl } = this;
     const width = gl.drawingBufferWidth;
     const height = gl.drawingBufferHeight;
@@ -215,29 +270,47 @@ export class Renderer {
       this.published();
       changed = true;
     }
-    changed = spot !== this.shown.spot || veil !== this.shown.veil || bounds !== this.shown.bounds || changed;
-    this.shown = { spot, veil, bounds };
+    const shown = { spot, veil, bounds, opaque, opaque2, cull };
+    changed = Object.keys(shown).some((key) => shown[key] !== this.shown[key]) || changed;
+    this.shown = shown;
     if (changed) this.accumulated = 0;
-    if (this.accumulated >= MAX_ACCUMULATED_FRAMES) return false;
+    // Solid walls are found per pixel (`walls`), which costs much more than the sheets, or drawn from the
+    // boundary meshes (`solid`). Either way they have only their edges to smooth, so fewer frames are
+    // averaged for them.
+    const solid = opaque2 && (veil || bounds);
+    const walls = opaque && !solid && (veil || bounds);
+    const frames = walls || solid ? WALL_FRAMES : MAX_ACCUMULATED_FRAMES;
+    if (this.accumulated >= frames) return false;
     // Uniforms describe the lamps being solved for; while they are, frames show the lamps solved last.
     if (this.solver.busy && this.layout !== this.pendingLayout && this.layout) this.useLayoutUniforms(this.layout);
-    this.solver.prepareDisplay({ veil, bounds });
+    this.solver.prepareDisplay({ veil: veil && !walls && !solid, bounds: (bounds && !walls) || solid });
 
     const n = this.accumulated;
     const jitter = n > 0 ? [(2 * halton(n, 2) - 1) / width, (2 * halton(n, 3) - 1) / height] : [0, 0];
     const view = camera.matrices(width / height, jitter);
-    const blend = 1 / Math.min(n + 1, MAX_ACCUMULATED_FRAMES);
+    const blend = 1 / Math.min(n + 1, frames);
 
+    // The light in the air is left out for the boundaries and for solid walls, which it would haze over.
+    // Culled, each pixel shows only the cell owning the surface in view there; solid walls show only the
+    // nearest anyway.
+    const culled = cull && !walls && !solid;
     this.drawSurfaces(view, spot);
-    if (veil) this.drawVeils(view);
-    if (bounds) {
-      this.drawBoundaries(view);
+    if (culled) this.drawOwners(view);
+    if (!bounds && !opaque && !opaque2) {
+      this.drawFog(view, culled);
+    } else {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.targets.fogFbo);
       gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 1]);
-    } else {
-      this.drawFog(view);
     }
-    this.present(this.composite(view, blend));
+    if (walls) {
+      this.drawWalls(view, { veil, bounds, pixelAngle: (2 * Math.tan(camera.fovy / 2)) / height });
+    } else if (solid) {
+      this.drawBoundaries(view, { solid, veilsOnly: !bounds });
+    } else {
+      if (veil) this.drawVeils(view, culled);
+      if (bounds) this.drawBoundaries(view, { cull: culled });
+    }
+    this.present(this.composite(view, blend, walls, culled));
     if (this.solver.busy && this.layout !== this.pendingLayout && this.layout) this.useLayoutUniforms(this.pendingLayout);
 
     this.accumulated++;
@@ -265,6 +338,8 @@ export class Renderer {
     gl.uniform3fv(uniforms.uCameraPos, view.eye);
     gl.uniform1f(uniforms.uAmbient, LOOK.ambient);
     this.solver.bindExact(this.programs.surface);
+    bindTextures(gl, this.programs.surface, { uDiffused: this.diffusedTexture }, 5);
+    gl.uniform1i(uniforms.uDiffuse, this.diffused ? 1 : 0);
 
     // From below the ground, it would hide everything above it.
     if (view.eye[1] > 0) {
@@ -282,79 +357,181 @@ export class Renderer {
     gl.disable(gl.DEPTH_TEST);
   }
 
-  // Adds the veil sheets over the surfaces, hidden where a surface is in front of them.
-  drawVeils(view) {
-    const { gl, targets, solver } = this;
-    const veil = this.programs.veil;
-    const { uniforms } = veil;
-    const quads = solver.mapSize / VEIL_STRIDE - 1;
+  // For Backface culling, which lamp's cell owns the surface in view at each pixel, as the surface is lit
+  // (surface.frag), whether or not the surface is shown; -1 where none does or the view misses it.
+  drawOwners(view) {
+    const { gl, targets } = this;
+    const surface = this.programs.surface;
+    const { uniforms } = surface;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.ownersFbo);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.clearBufferfv(gl.COLOR, 0, [-1, 0, 0, 0]);
+    gl.clearBufferfv(gl.DEPTH, 0, [1]);
+    gl.enable(gl.DEPTH_TEST);
+    gl.useProgram(surface.program);
+    gl.uniformMatrix4fv(uniforms.uViewProj, false, view.viewProj);
+    gl.uniform3fv(uniforms.uCameraPos, view.eye);
+    this.solver.bindExact(surface);
+    bindTextures(gl, surface, { uDiffused: this.diffusedTexture }, 5);
+    gl.uniform1i(uniforms.uOwner, 1);
+    gl.uniformMatrix4fv(uniforms.uModel, false, this.spot.model);
+    gl.bindVertexArray(this.spotFacets.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, this.spotFacets.count);
+    gl.uniform1i(uniforms.uOwner, 0);
+    gl.disable(gl.DEPTH_TEST);
+  }
+
+  // Glowing sheets over the surfaces, added to what is behind them and hidden where a surface is in
+  // front of them.
+  beginSheets() {
+    const { gl, targets } = this;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targets.veils);
     gl.viewport(0, 0, this.width, this.height);
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(false);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
+  }
+
+  endSheets() {
+    const { gl } = this;
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.disable(gl.DEPTH_TEST);
+  }
+
+  // With `cull`, sheets show only where they belong to the cell owning the surface in view (drawOwners()).
+  drawVeils(view, cull) {
+    const { gl, solver, targets } = this;
+    const veil = this.programs.veil;
+    const { uniforms } = veil;
+    const quads = solver.mapSize / VEIL_STRIDE - 1;
+    this.beginSheets();
     gl.useProgram(veil.program);
-    bindTextures(gl, veil, { uReach: solver.texture, uTags: solver.tags, uCells: solver.cells });
+    bindTextures(gl, veil, { uReach: solver.texture, uTags: solver.tags, uCells: solver.cells, uOwners: targets.owners });
     gl.uniformMatrix4fv(uniforms.uViewProj, false, view.viewProj);
     gl.uniform3fv(uniforms.uCameraPos, view.eye);
     gl.uniform1i(uniforms.uStride, VEIL_STRIDE);
     gl.uniform1f(uniforms.uVeilOpacity, LOOK.veilOpacity);
     gl.uniform1f(uniforms.uVeilGain, LOOK.veilGain);
+    gl.uniform1i(uniforms.uCull, cull ? 1 : 0);
     gl.bindVertexArray(this.fullscreen);
     // One instance per lamp and each of the two partners a cell of its mesh can have.
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6 * quads * quads, 2 * this.lamps.length);
-    gl.disable(gl.BLEND);
-    gl.depthMask(true);
-    gl.disable(gl.DEPTH_TEST);
+    this.endSheets();
   }
 
-  // Adds sheets over the boundaries of the lit volumes, one mesh per lamp, hidden behind surfaces.
-  drawBoundaries(view) {
-    const { gl, targets, solver } = this;
+  // The boundaries of the lit volumes, one mesh per lamp, as glowing sheets; with `cull`, only where they
+  // belong to the cell owning the surface in view (drawOwners()). With `solid` (Opaque v2) they are solid
+  // walls among the surfaces instead, drawn only from inside their volumes, so that a cell seen from
+  // outside shows the inside of its far walls; with `veilsOnly`, only the walls on veils.
+  drawBoundaries(view, { cull = false, solid = false, veilsOnly = false } = {}) {
+    const { gl, solver, targets } = this;
     if (solver.prepared.boundaries < 0) return;
     const boundary = this.programs.boundary;
     const { uniforms } = boundary;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.veils);
-    gl.viewport(0, 0, this.width, this.height);
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthMask(false);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE);
+    if (solid) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, targets.scene);
+      gl.viewport(0, 0, this.width, this.height);
+      gl.enable(gl.DEPTH_TEST);
+      // A mesh's triangles go round anticlockwise as seen from inside its volume (boundary.vert).
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+    } else {
+      this.beginSheets();
+    }
     gl.useProgram(boundary.program);
     const { ends, offsets, diagonals, slopes } = solver.boundaries;
-    bindTextures(gl, boundary, { uEnds: ends, uOffsets: offsets, uDiagonals: diagonals, uSlopes: slopes });
+    bindTextures(gl, boundary, { uEnds: ends, uOffsets: offsets, uDiagonals: diagonals, uSlopes: slopes, uOwners: targets.owners, uTags: solver.tags });
     gl.uniformMatrix4fv(uniforms.uViewProj, false, view.viewProj);
     gl.uniform3fv(uniforms.uCameraPos, view.eye);
     gl.uniform1i(uniforms.uStride, BOUNDARY_STRIDE);
     gl.uniform1f(uniforms.uOpacity, LOOK.boundaryOpacity);
     gl.uniform1f(uniforms.uGain, LOOK.boundaryGain);
+    gl.uniform1i(uniforms.uCull, cull ? 1 : 0);
+    gl.uniform1i(uniforms.uSolid, solid ? 1 : 0);
+    gl.uniform1i(uniforms.uVeilsOnly, veilsOnly ? 1 : 0);
     gl.bindVertexArray(this.fullscreen);
     // Six vertices for each cell between four neighbouring grid points, one instance per lamp.
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6 * (solver.mapSize / BOUNDARY_STRIDE - 1) ** 2, this.lamps.length);
-    gl.disable(gl.BLEND);
-    gl.depthMask(true);
-    gl.disable(gl.DEPTH_TEST);
+    if (solid) {
+      gl.disable(gl.CULL_FACE);
+      gl.disable(gl.DEPTH_TEST);
+    } else {
+      this.endSheets();
+    }
   }
 
-  drawFog(view) {
+  // Solid walls between the cells (walls.frag): the veils with `veil`, and with `bounds` every wall where
+  // a lamp's light ends. `pixelAngle` is the angle a pixel spans, which is as near as walls need placing.
+  drawWalls(view, { veil, bounds, pixelAngle }) {
+    const { gl, targets, solver } = this;
+    gl.bindVertexArray(this.fullscreen);
+    const light = this.programs.cameraLight;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.cameraLight.fbo);
+    gl.viewport(0, 0, 1, 1);
+    gl.useProgram(light.program);
+    solver.bindExact(light);
+    gl.uniform3fv(light.uniforms.uCameraPos, view.eye);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    const shell = this.programs.shell;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.shellFbo);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.clearBufferfv(gl.COLOR, 0, [1e30, 0, 0, 0]);
+    gl.clearBufferfv(gl.DEPTH, 0, [1]);
+    gl.enable(gl.DEPTH_TEST);
+    gl.useProgram(shell.program);
+    gl.uniformMatrix4fv(shell.uniforms.uViewProj, false, view.viewProj);
+    gl.uniformMatrix4fv(shell.uniforms.uModel, false, this.spot.model);
+    gl.uniform3fv(shell.uniforms.uCameraPos, view.eye);
+    gl.bindVertexArray(this.spotFacets.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, this.spotFacets.count);
+    gl.disable(gl.DEPTH_TEST);
+
+    const walls = this.programs.walls;
+    const { uniforms } = walls;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.walls);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.useProgram(walls.program);
+    solver.bindExact(walls);
+    bindTextures(gl, walls, { uSceneDistance: targets.distance, uShell: targets.shell, uCameraLight: this.cameraLight.texture, uBvhNormals: this.bvh.normals }, 5);
+    gl.uniformMatrix4fv(uniforms.uInvViewProj, false, view.invViewProj);
+    gl.uniform3fv(uniforms.uCameraPos, view.eye);
+    gl.uniform2f(uniforms.uResolution, this.width, this.height);
+    gl.uniform1i(uniforms.uVeils, veil ? 1 : 0);
+    gl.uniform1i(uniforms.uBounds, bounds ? 1 : 0);
+    gl.uniform1f(uniforms.uPixelAngle, pixelAngle);
+    gl.bindVertexArray(this.fullscreen);
+    gl.enable(gl.SCISSOR_TEST);
+    for (let y = 0; y < this.height; y += WALL_BAND) {
+      gl.scissor(0, y, this.width, WALL_BAND);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.flush();
+    }
+    gl.disable(gl.SCISSOR_TEST);
+  }
+
+  // The light in the air; with `cull`, only of the cell owning the surface in view (drawOwners()).
+  drawFog(view, cull) {
     const { gl, targets } = this;
     const fog = this.programs.fog;
     const { uniforms } = fog;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targets.fogFbo);
     gl.viewport(0, 0, ...targets.halfSize);
     gl.useProgram(fog.program);
-    bindTextures(gl, fog, { uReach: this.solver.reachHalf, uSceneDistance: targets.distance });
+    bindTextures(gl, fog, { uReach: this.solver.reachHalf, uSceneDistance: targets.distance, uOwners: targets.owners });
     gl.uniformMatrix4fv(uniforms.uInvViewProj, false, view.invViewProj);
     gl.uniform3fv(uniforms.uCameraPos, view.eye);
     gl.uniform2f(uniforms.uResolution, this.width, this.height);
     gl.uniform1i(uniforms.uFrame, this.frame);
     gl.uniform1f(uniforms.uFogDensity, LOOK.fogDensity);
+    gl.uniform1i(uniforms.uCull, cull ? 1 : 0);
     gl.bindVertexArray(this.fullscreen);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  composite(view, blend) {
+  composite(view, blend, walls, cull) {
     const { gl, targets } = this;
     const composite = this.programs.composite;
     const { uniforms } = composite;
@@ -368,7 +545,12 @@ export class Renderer {
       uSceneDistance: targets.distance,
       uFog: targets.fog,
       uHistory: targets.accumulation[read],
+      uWallColor: targets.wallColor,
+      uWallDistance: targets.wallDistance,
+      uOwners: targets.owners,
     });
+    gl.uniform1i(uniforms.uWalls, walls ? 1 : 0);
+    gl.uniform1i(uniforms.uCull, cull ? 1 : 0);
     gl.uniformMatrix4fv(uniforms.uInvViewProj, false, view.invViewProj);
     gl.uniform3fv(uniforms.uCameraPos, view.eye);
     gl.uniform2f(uniforms.uResolution, this.width, this.height);
@@ -511,15 +693,17 @@ export class Renderer {
 }
 
 // Spot as separate triangles, each vertex also carrying its barycentric coordinates and its triangle's
-// corners and normals, in the attribute locations of surface.vert.
+// corners, their normals and their indices in the mesh, in the attribute locations of surface.vert.
 function createFacets(gl, { positions, normals, indices }) {
   const count = indices.length;
   const barycentric = new Float32Array(3 * count);
   const own = [positions, normals].map(() => new Float32Array(3 * count));
   const triangle = [positions, normals].map(() => new Float32Array(9 * count));
+  const corners = new Float32Array(3 * count);
   for (let t = 0; t < count; t += 3) {
     for (let k = 0; k < 3; k++) {
       barycentric[3 * (t + k) + k] = 1;
+      corners.set([indices[t], indices[t + 1], indices[t + 2]], 3 * (t + k));
       [positions, normals].forEach((data, a) => {
         own[a].set(data.subarray(3 * indices[t + k], 3 * indices[t + k] + 3), 3 * (t + k));
         for (let m = 0; m < 3; m++) {
@@ -530,7 +714,7 @@ function createFacets(gl, { positions, normals, indices }) {
   }
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
-  const attributes = [[own[0], 1], [own[1], 1], [barycentric, 1], [triangle[0], 3], [triangle[1], 3]];
+  const attributes = [[own[0], 1], [own[1], 1], [barycentric, 1], [triangle[0], 3], [triangle[1], 3], [corners, 1]];
   let location = 0;
   for (const [data, columns] of attributes) {
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -549,4 +733,12 @@ export function worldTriangles({ positions, indices }, model) {
   const triangles = new Float32Array(indices.length * 3);
   indices.forEach((v, k) => triangles.set(transformPoint(model, positions.subarray(3 * v, 3 * v + 3)), 3 * k));
   return triangles;
+}
+
+// The unit normals at the corners of Spot's triangles, 9 floats each, as in worldTriangles(); the model
+// only scales uniformly and translates, which leaves directions alone.
+function cornerNormals({ normals, indices }) {
+  const corners = new Float32Array(indices.length * 3);
+  indices.forEach((v, k) => corners.set(normals.subarray(3 * v, 3 * v + 3), 3 * k));
+  return corners;
 }

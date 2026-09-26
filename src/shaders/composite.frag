@@ -5,6 +5,11 @@ uniform sampler2D uSceneColor;
 uniform sampler2D uSceneDistance;
 uniform sampler2D uFog;
 uniform sampler2D uHistory;
+uniform bool uWalls;               // whether the solid walls are drawn (walls.frag)
+uniform bool uCull;                // whether to show only the cell owning the surface in view
+uniform sampler2D uOwners;         // with uCull, the lamp owning the surface in view at each pixel
+uniform sampler2D uWallColor;
+uniform sampler2D uWallDistance;
 uniform mat4 uInvViewProj;
 uniform vec3 uCameraPos;
 uniform vec2 uResolution;
@@ -58,7 +63,15 @@ void main() {
   // The scene colour holds the surfaces and any veils in front of them or of the empty background.
   float depth = min(texelFetch(uSceneDistance, px, 0).r, FAR);
   vec3 color = texelFetch(uSceneColor, px, 0).rgb + (depth < FAR ? vec3(0.0) : background(rd));
+  float wall = uWalls ? texelFetch(uWallDistance, px, 0).r : INF;
+  if (wall < depth) {
+    depth = wall;
+    color = texelFetch(uWallColor, px, 0).rgb;
+  }
+  // Culled, a lamp shows only where the surface in view is in its cell.
+  int owner = uCull ? int(texelFetch(uOwners, px, 0).r) : -1;
   for (int i = 0; i < LAMP_COUNT; ++i) {
+    if (uCull && i != owner) continue;
     if (sphereHit(ro, rd, lampOrigin[i].xyz, uLampRadius) < depth) color = uLampEmission * lampColor[i].rgb;
   }
   color += upsampledFog(depth);

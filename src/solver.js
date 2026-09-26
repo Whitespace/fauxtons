@@ -1,5 +1,5 @@
 import { bindTextures, createDepthBuffer, createFramebuffer, createTexture } from './gl.js';
-import { P_MIN, RANGE, lampViewProjection } from './scene.js';
+import { P_MIN, RANGE } from './scene.js';
 
 const ALIVE = 1e30;
 
@@ -20,13 +20,12 @@ export const BOUNDARY_STRIDE = 1;
 // Solves where each lamp's light ends along every direction of its map by sweeping all rays outward in
 // increasing field-distance, then following each ray exactly against the others' light (exact.glsl).
 // The result is an atlas of distances, one map per lamp, laid out as `layout` says (createLayout() in
-// scene.js). `bvh` holds Spot's triangles (bvh.js).
+// scene.js). `bvh` holds Spot's triangles, `count` of them (bvh.js).
 export class ExtinctionSolver {
-  constructor(gl, { programs, fullscreen, spot, bvh, layout }) {
+  constructor(gl, { programs, fullscreen, bvh, layout }) {
     this.gl = gl;
     this.programs = programs;
     this.fullscreen = fullscreen;
-    this.spot = spot;
     this.bvh = bvh;
     this.atlasSide = layout.atlasSide;
     this.mapSize = layout.mapSize;
@@ -115,27 +114,27 @@ export class ExtinctionSolver {
 
   // Starts solving for `lamps`, which the Lamps uniform block must already hold.
   start(lamps) {
-    const { gl, programs, spot, size, atlasSide, mapSize } = this;
+    const { gl, programs, bvh, size, atlasSide, mapSize } = this;
     const fastest = Math.max(...lamps.map((lamp) => lamp.sqrtPower));
     const slowest = Math.min(...lamps.map((lamp) => lamp.sqrtPower)) * P_MIN;
     this.firstTime = START_DISTANCE / fastest;
     this.passCount = Math.ceil(Math.log(RANGE / slowest / this.firstTime) / Math.log(STEP_RATIO)) + 1;
 
+    // The distance to Spot along every ray, one map at a time (see occluder.vert).
     this.solving = 1 - this.publishedOccluder;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.occluderFbos[this.solving]);
     gl.viewport(0, 0, size, size);
     gl.clearBufferfv(gl.COLOR, 0, [ALIVE, 0, 0, 0]);
     gl.clearBufferfv(gl.DEPTH, 0, [1]);
-    const { program, uniforms } = programs.occluder;
-    gl.useProgram(program);
+    const occluder = programs.occluder;
+    gl.useProgram(occluder.program);
+    bindTextures(gl, occluder, { uTriangles: bvh.triangles });
     gl.enable(gl.DEPTH_TEST);
-    gl.uniformMatrix4fv(uniforms.uModel, false, spot.model);
-    gl.bindVertexArray(spot.vao);
+    gl.bindVertexArray(this.fullscreen);
     lamps.forEach((lamp, i) => {
       gl.viewport((i % atlasSide) * mapSize, Math.floor(i / atlasSide) * mapSize, mapSize, mapSize);
-      gl.uniformMatrix4fv(uniforms.uViewProj, false, lampViewProjection(lamp));
-      gl.uniform3fv(uniforms.uOrigin, lamp.position);
-      gl.drawElements(gl.TRIANGLES, spot.count, spot.type, 0);
+      gl.uniform1i(occluder.uniforms.uLamp, i);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, bvh.count);
     });
     gl.disable(gl.DEPTH_TEST);
 

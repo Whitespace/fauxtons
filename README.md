@@ -11,23 +11,24 @@ This repo is an investigation of how best to model fauxtonic behavior on a compu
 ## The model
 
 A scene holds lamps and opaque occluders, one of which is the ground. Lamp `i` has a position `o_i`,
-a unit axis `a_i`, a power `P_i` and a cone half-angle `α_i`. Write `c_i = cos²α_i`.
+a unit axis `a_i` and a power `P_i`. The lamps are LEDs of one type, so they share one beam: its
+brightness falls to half at an angle `α` off the axis, and would fade to nothing at an angle `β`. Write
+`c = cos β`.
 
-**Field.** At a point `x`, let `Δ = x − o_i`, `r = |Δ|` and `cos θ = (a_i · Δ) / r`. The cone profile is
+**Field.** At a point `x`, let `Δ = x − o_i`, `r = |Δ|` and `cos θ = (a_i · Δ) / r`. The beam profile is
 
-`p_i(x) = (cos²θ − c_i) / (1 − c_i)`
+`p_i(x) = ((cos θ − c) / (1 − c))^m`
 
-which is 1 on the axis and 0 at the cone's nominal edge. The field is
+which is 1 on the axis and 0 at `β`, with the exponent `m` that makes `p² = ½` at `α`. The field is
 
 `F_i(x) = P_i p_i(x)² / r²`
 
-where `a_i · Δ > 0`, `r ≤ R` and `p_i(x) ≥ p_min`, and zero everywhere else. `R` is a range beyond
-which no lamp reaches. `p_min` is a cone cutoff: directions whose profile is below it emit no light,
-so every cone has a hard edge just inside its nominal one. Without the cutoff, a lamp's field fades
-smoothly to zero at its edge, and the isolux veil between it and any other lamp hugs that edge
-asymptotically. Along one emission direction the profile is constant, so the cutoff removes whole
-rays rather than carving new edges inside the beam. It also keeps the speed of every ray's light,
-defined below, above zero.
+where `cos θ > c`, `r ≤ R` and `p_i(x) ≥ p_min`, and zero everywhere else. `R` is a range beyond
+which no lamp reaches. `p_min` is a cutoff: directions whose profile is below it emit no light, so
+every beam has a hard edge short of `β`. Without the cutoff, a lamp's field fades smoothly to zero at
+its edge, and the isolux veil between it and any other lamp hugs that edge asymptotically. Along one
+emission direction the profile is constant, so the cutoff removes whole rays rather than carving new
+edges inside the beam. It also keeps the speed of every ray's light, defined below, above zero.
 
 **Light and extinction.** A lamp emits light along every direction inside its cutoff. The light
 travels in a straight line from the lamp and ends at the first of:
@@ -113,15 +114,19 @@ field-distance `d` depends on nothing decided at a larger field-distance.
 
 ## Parameters
 
-| Symbol | Meaning | Typical value |
+| Symbol | Meaning | Value |
 |---|---|---|
-| `P_i` | lamp power | 18 to 30 |
-| `α_i` | cone half-angle | 36° to 44° |
+| `P_i` | lamp power | 50 to 100 |
+| `α` | angle off the axis where the beam is half as bright | 40° |
+| `β` | angle where the beam would fade to nothing | 100° |
 | `R` | range | 18 |
-| `p_min` | cone cutoff on the profile | 0.01 |
+| `p_min` | cutoff on the profile | 0.15 |
 
-Distances are in scene units. These values suit lamps a few units above the ground and a few units
-apart.
+Distances are in scene units of 10 mm. The beam is a cautious model of the 5050 and 2020 LEDs the
+sculptures are built with, narrower rather than wider than theirs. Each lamp's light is solved over a
+map of its directions, which can't reach 90°, so `p_min` cuts the beam off at 80°, where it is down to
+about 2% of its brightness on the axis. The map places each direction by its angle off the lamp's axis
+along each of the map's two axes, so its texels are spread about evenly over the beam.
 
 ## Lighting Spot from inside
 
@@ -134,10 +139,11 @@ no hot spots and no jumps in brightness where patches meet.
   the number of lamps chosen, or places that many afresh.
 - **Placing lamps.** Lamps go in clusters, a few back to back at one place, facing out. Lamps that share
   a place never cut into each other's light, and where their patches meet, their fields and their
-  angles of incidence agree, so the brightness carries on across the seam. Places are picked one at a
+  angles of incidence agree, so the brightness carries on across the border. Places are picked one at a
   time, each where a lamp could light well the most of the wall not yet lit well: three, and then one
-  more for about every 18 lamps. Seams between clusters jump, and small clusters light their walls
-  unevenly, so a few large clusters do best: three for 64 lamps, seven for 128 (`src/clusters.js`).
+  more for about every 18 lamps. Brightness steps where patches of different clusters meet, and small
+  clusters light their walls unevenly, so a few large clusters do best: three for 64 lamps, seven for
+  128 (`src/clusters.js`).
   Lamps are shared out between places by the solid angle of wall each serves, and aimed to split it
   evenly; new layouts get colours that differ wherever patches meet (`src/colors.js`).
 - **Optimising.** Each round solves the cells, measures how every vertex of Spot is lit, and moves
@@ -145,9 +151,53 @@ no hot spots and no jumps in brightness where patches meet.
   A lamp slides along its own axis, turns and dims; a cluster moves by the push of all its lamps. Dark
   vertices pull on the nearest cone, and where one lamp's light cuts off another's, both are pushed apart.
   Moves that leave more of Spot dark are undone (`src/optimizer.js`).
-- **Measures.** The readout gives the share of the wall left dark, the ratio of the 95th to the 5th
-  percentile of brightness over the lit wall, and the share of seams where the brightness jumps by more
-  than a fifth.
+- **Measures.** The readout gives the share of the wall left dark, and how evenly each patch is lit:
+  its brightest point over its darkest, in the median patch and the worst. The dimmers can even out
+  whole patches against each other, but not a patch in itself. A dark spot belongs to the patch around
+  it, the nearest lit one, and a patch with a black spot, somewhere that gets less than a hundredth of
+  its brightest light, is counted apart. Each patch is measured at its vertices and where its borders
+  cross the mesh's edges, so that every patch is measured right up to its corners. The measures are of
+  the light arriving from the lamps in a straight line, never of light the shell spreads.
 
 Optimise runs rounds until it is pressed again, then shows the best layout found; Save writes it to
 `layouts/` through the development server.
+
+## Spread in the shell
+
+The shell is milky resin, which spreads light sideways as it passes through. Spread shows that, for
+looking at only (`src/diffusion.js`): no amount of it is relied on to light what no lamp can see, so the
+measures ignore it. Light scatters sideways through the resin as it crosses the shell and leaks out of
+both faces as it goes: diffusion with loss in a thin sheet, the screened Poisson equation `M − ℓ² ΔM = E`
+on the surface, for the light `E` arriving and `M` leaving. `ℓ`, in millimetres, is how far it spreads:
+most light comes out within `2ℓ` of where it went in. Light stays in its cell, as the walls between
+cells stop it and send it back, and a dark spot is in the cell of the patch around it.
+
+## Opaque sheets
+
+Opaque draws the veils and the boundaries of the lit volumes as solid walls rather than glowing sheets,
+without the light in the air. The walls are found for every pixel: the view is followed from cell to
+cell until the light it is in ends. A veil is drawn where the two fields are equal and both lights get
+there, Spot's surface where the view meets its triangles, and the edge of a shadow along the rays of the
+lamp that makes it. With Veil, the view goes on past any other wall to the first veil; with
+Boundaries, it stops at the first wall. A wall is in the colour of the cell the view is in, so looking
+at a cell from outside shows the inside of its far walls.
+
+Opaque v2 draws the walls from the boundary meshes instead, for about what the glowing boundaries cost:
+each lamp's mesh is solid, flat shaded in the lamp's colour, and drawn only from inside its lit volume,
+so a cell seen from outside again shows the inside of its far walls. With Veil and not Boundaries, only
+the parts of the meshes on veils are drawn. The walls have the meshes' flaws.
+
+## Backface culling
+
+The light in the air is each lamp's light added up along the view, with nothing in front hiding
+anything behind. Backface culling shows at each pixel only the cell owning the patch of surface in view
+there, the one lighting it, whichever way its lamp points: everything behind is hidden, and nothing
+shows where no patch is in view. It applies to whatever is drawn: the light in the air, the veils and
+the boundaries.
+
+## The orb
+
+The orb scene is a sculpture that has been built, to compare the model with: a sphere 250 mm across,
+split into the 60 pentagons of a pentagonal hexecontahedron, with an LED 50 mm under the middle of each,
+facing out. Its lamps lie along the directions of a snub dodecahedron's vertices, so by symmetry each
+pair of neighbours meets on the plane between them, and the cells come out as the pentagons.

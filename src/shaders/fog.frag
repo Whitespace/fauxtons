@@ -10,6 +10,8 @@ uniform vec3 uCameraPos;
 uniform vec2 uResolution;          // full resolution
 uniform int uFrame;
 uniform float uFogDensity;
+uniform bool uCull;                // whether to show only the light of the cell owning the surface in view
+uniform sampler2D uOwners;         // with uCull, full resolution: the lamp owning the surface there, -1 for none
 
 out vec4 outFog;                   // rgb light, a the distance it was integrated to
 
@@ -33,9 +35,6 @@ float fogReach(int i, vec3 d) {
 // about the lamp), leaving p² and the presence test in the estimator.
 vec3 inscatter(int i, vec3 ro, vec3 rd, vec2 span) {
   vec3 o = lampOrigin[i].xyz;
-  vec3 axis = lampAxis[i].xyz;
-  float c = lampAxis[i].w;
-  float spread = 1.0 / (1.0 - c);
   float tc = dot(o - ro, rd);
   float b = max(length(ro + tc * rd - o), 1e-4);
   float th0 = atan((span.x - tc) / b);
@@ -51,9 +50,8 @@ vec3 inscatter(int i, vec3 ro, vec3 rd, vec2 span) {
     slope = (slope + turn) / (1.0 - slope * turn);
     float r2 = dot(d, d);
     float invR = inversesqrt(r2);
-    float ct = dot(axis, d) * invR;
-    float p = (ct * ct - c) * spread;
-    if (ct > 0.0 && p >= P_MIN && r2 * invR <= fogReach(i, d)) sum += p * p;
+    float p = profile(i, d * invR);
+    if (p >= P_MIN && r2 * invR <= fogReach(i, d)) sum += p * p;
   }
   return lampColor[i].rgb * lampColor[i].w * sum * (th1 - th0) / (b * float(FOG_SAMPLES));
 }
@@ -76,8 +74,11 @@ void main() {
   vec3 ro = uCameraPos;
   vec3 rd = normalize(far.xyz / far.w - ro);
 
+  // Every lamp's light adds to what is seen; culled, only the light of the cell owning the surface in view
+  // here shows, and nothing where no cell's surface is in view.
   vec3 fog = vec3(0.0);
-  for (int i = 0; i < LAMP_COUNT; ++i) {
+  int owner = uCull ? int(texelFetch(uOwners, min(full + 1, last), 0).r) : -1;
+  for (int i = uCull ? max(owner, 0) : 0; i < (uCull ? owner + 1 : LAMP_COUNT); ++i) {
     vec2 span = coneSpan(i, ro, rd, depth);
     if (span.x < span.y) fog += inscatter(i, ro, rd, span);
   }

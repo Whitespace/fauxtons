@@ -22,14 +22,27 @@ canvas.dragging {
   cursor: grabbing;
 }
 
-.controls {
+.panel {
   position: fixed;
   left: 16px;
   right: 80px;
   bottom: 16px;
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.controls {
+  display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  pointer-events: auto;
+}
+
+.controls [hidden] {
+  display: none;
 }
 
 .controls button,
@@ -93,14 +106,20 @@ canvas.dragging {
 }
 
 .readout {
-  position: fixed;
-  left: 16px;
-  bottom: 52px;
-  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 5px 10px;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
-  color: rgb(255 255 255 / 0.55);
+  color: rgb(255 255 255 / 0.8);
+  background: rgb(18 18 22 / 0.7);
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
   pointer-events: none;
   user-select: none;
+}
+
+.readout:empty {
+  display: none;
 }
 
 .fps {

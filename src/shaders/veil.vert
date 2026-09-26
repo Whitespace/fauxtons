@@ -17,20 +17,21 @@ out vec3 vWorld;
 const ivec2 CORNERS[6] = ivec2[6](ivec2(0, 0), ivec2(1, 0), ivec2(1, 1), ivec2(0, 0), ivec2(1, 1), ivec2(0, 1));
 
 // Distance along lamp i's ray `dir` at which d_i = d_j, by Newton's method from `guess` and kept
-// near it. Along the ray d_i grows linearly, as t / speed.
+// within a factor of two of it; `guess` itself where it doesn't settle, which keeps the triangles of a
+// grid corner off the veil small. Along the ray d_i grows linearly, as t / speed.
 float veilCrossing(int i, int j, vec3 dir, float guess) {
   vec3 o = lampOrigin[i].xyz;
   float speed = lampOrigin[i].w * max(profile(i, dir), P_MIN);
   float t = guess;
-  for (int k = 0; k < 5; ++k) {
+  for (int k = 0; k < 10; ++k) {
     vec3 x = o + t * dir;
     float dj = fieldDistance(j, x);
     if (dj >= INF) break;
     float slope = 1.0 / speed - dot(fieldDistanceGradient(j, x), dir);
     if (abs(slope) < 1e-6) break;
-    t = clamp(t - (t / speed - dj) / slope, 0.8 * guess, 1.25 * guess);
+    t = clamp(t - (t / speed - dj) / slope, 0.5 * guess, 2.0 * guess);
   }
-  return t;
+  return abs(t / speed - fieldDistance(j, o + t * dir)) < 1e-3 * t / speed ? t : guess;
 }
 
 void main() {

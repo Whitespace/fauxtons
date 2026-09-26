@@ -9,18 +9,28 @@
 </head>
 <body>
   <canvas></canvas>
-  <div class="controls">
-    <button type="button" data-toggle="spot" aria-pressed="true">Spot</button>
-    <button type="button" data-toggle="veil" aria-pressed="true">Veil</button>
-    <button type="button" data-toggle="bounds" aria-pressed="false">Boundaries</button>
-    <select data-control="count" aria-label="Number of lamps"></select>
-    <button type="button" data-action="optimize" aria-pressed="false">Optimise</button>
-    <button type="button" data-action="reset">Re-place</button>
-    <button type="button" data-action="save-layout">Save</button>
-    <button type="button" data-action="copy-layout">Copy layout</button>
-    <button type="button" data-action="copy-link">Copy link</button>
+  <div class="panel">
+    <output class="readout"></output>
+    <div class="controls">
+      <select data-control="scene" aria-label="Scene">
+        <option value="spot">Spot</option>
+        <option value="orb">Orb</option>
+      </select>
+      <button type="button" data-toggle="spot" aria-pressed="true">Surface</button>
+      <button type="button" data-toggle="veil" aria-pressed="true">Veil</button>
+      <button type="button" data-toggle="bounds" aria-pressed="false">Boundaries</button>
+      <button type="button" data-toggle="opaque" aria-pressed="false">Opaque</button>
+      <button type="button" data-toggle="opaque2" aria-pressed="false">Opaque v2</button>
+      <button type="button" data-toggle="cull" aria-pressed="false">Backface culling</button>
+      <select data-control="spread" aria-label="How far light spreads sideways in the shell"></select>
+      <select data-control="count" aria-label="Number of lamps"></select>
+      <button type="button" data-action="optimize" aria-pressed="false">Optimise</button>
+      <button type="button" data-action="reset">Re-place</button>
+      <button type="button" data-action="save-layout">Save</button>
+      <button type="button" data-action="copy-layout">Copy layout</button>
+      <button type="button" data-action="copy-link">Copy link</button>
+    </div>
   </div>
-  <output class="readout"></output>
   <output class="fps"></output>
   <script type="module" src="src/main.js"></script>
 </body>

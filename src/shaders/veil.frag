@@ -10,6 +10,8 @@ uniform usampler2D uTags;  // the lamp whose veil each ray ended on, plus one; 0
 uniform vec3 uCameraPos;
 uniform float uVeilOpacity;
 uniform float uVeilGain;
+uniform bool uCull;          // whether to show only the veils of the cell owning the surface in view
+uniform sampler2D uOwners;   // the lamp owning the surface in view at each pixel, -1 for none
 
 flat in ivec2 vPair;
 in vec3 vWorld;
@@ -42,6 +44,10 @@ float endsOnVeil(int i, int j, vec3 x) {
 void main() {
   int i = vPair.x;
   int j = vPair.y;
+  if (uCull) {
+    int owner = int(texelFetch(uOwners, ivec2(gl_FragCoord.xy), 0).r);
+    if (i != owner && j != owner) discard;
+  }
   // Off the veil, where a grid corner failed to settle onto it and stretched its triangles.
   float di = fieldDistance(i, vWorld);
   float dj = fieldDistance(j, vWorld);

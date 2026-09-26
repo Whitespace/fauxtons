@@ -1,6 +1,7 @@
 // Scene state carried in the URL fragment, e.g.
-// #az=25.00&el=16.00&d=13.000&t=0.000,1.600,0.000&fov=40.0&spot=1&veil=1&bounds=0&n=64
-// Angles are in degrees, and n is the number of lamps. Anything missing keeps its current value.
+// #az=25.00&el=16.00&d=13.000&t=0.000,1.600,0.000&fov=40.0&spot=1&veil=1&bounds=0&opaque=0&opaque2=0&cull=0&n=64&scene=spot&spread=2
+// Angles are in degrees, n is the number of lamps, scene is spot or orb, and spread is how far light
+// spreads in the shell, in millimetres. Anything missing keeps its current value.
 
 const DEG = 180 / Math.PI;
 
@@ -15,9 +16,14 @@ export function encodeView(camera, options) {
     spot: options.spot ? '1' : '0',
     veil: options.veil ? '1' : '0',
     bounds: options.bounds ? '1' : '0',
+    opaque: options.opaque ? '1' : '0',
+    opaque2: options.opaque2 ? '1' : '0',
+    cull: options.cull ? '1' : '0',
     n: String(options.count),
+    scene: options.scene,
+    spread: String(options.spread),
   };
-  // Every value is numeric, so nothing needs escaping; this keeps the commas readable.
+  // Every value is a number or a plain word, so nothing needs escaping; this keeps the commas readable.
   return `#${Object.entries(params).map(([key, value]) => `${key}=${value}`).join('&')}`;
 }
 
@@ -35,5 +41,18 @@ export function decodeView(hash) {
   if (number('fov') !== undefined) camera.fovy = number('fov') / DEG;
   const target = (params.get('t') ?? '').split(',').map(parseFloat);
   if (target.length === 3 && target.every(Number.isFinite)) camera.target = target;
-  return { camera, options: { spot: flag('spot'), veil: flag('veil'), bounds: flag('bounds'), count: number('n') } };
+  return {
+    camera,
+    options: {
+      spot: flag('spot'),
+      veil: flag('veil'),
+      bounds: flag('bounds'),
+      opaque: flag('opaque'),
+      opaque2: flag('opaque2'),
+      cull: flag('cull'),
+      count: number('n'),
+      scene: params.get('scene') ?? undefined,
+      spread: number('spread'),
+    },
+  };
 }

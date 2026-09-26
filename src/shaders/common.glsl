@@ -10,12 +10,12 @@ const float INF = 1e30;
 // Packed by packLamps() in scene.js. The first LAMP_COUNT lamps are the scene's.
 layout(std140) uniform Lamps {
   vec4 lampOrigin[LAMP_CAPACITY];  // xyz position, w sqrt(P)
-  vec4 lampAxis[LAMP_CAPACITY];    // xyz unit axis, w c = cos²α
-  vec4 lampRight[LAMP_CAPACITY];   // xyz map right, w tan of the cutoff angle
+  vec4 lampAxis[LAMP_CAPACITY];    // xyz unit axis, w c, the cosine at which the beam fades out
+  vec4 lampRight[LAMP_CAPACITY];   // xyz map right, w the angle the map reaches along its axes (mapUV())
   vec4 lampUp[LAMP_CAPACITY];      // xyz map up, w cos² of the cutoff angle
   vec4 lampColor[LAMP_CAPACITY];   // rgb colour, w P
   vec4 sceneParams;                // x R, y p_min, z map size in texels, w SURFACE_GAP (scene.js)
-  vec4 layoutParams;               // x lamp count, y maps along each side of the atlas
+  vec4 layoutParams;               // x lamp count, y maps along each side of the atlas, z the beam's exponent
 };
 
 #define RANGE sceneParams.x
@@ -23,17 +23,19 @@ layout(std140) uniform Lamps {
 #define MAP_SIZE int(sceneParams.z)
 #define LAMP_COUNT int(layoutParams.x)
 #define ATLAS_SIDE int(layoutParams.y)
+#define BEAM_EXPONENT layoutParams.z
 
 // How far past the reach interpolated from the rays around a point another lamp's light still counts
 // as present there, at most, relative to the point's distance from that lamp: a few texels' worth, as
 // the spread it stands in for scales with the texel size (see present() in sweep.frag).
 #define REACH_TOLERANCE (5.0 / sceneParams.z)
 
-// Cone profile of lamp i along a unit direction; negative behind the lamp.
+// Beam profile of lamp i along a unit direction, p = ((cos θ - c) / (1 - c))^m (scene.js); negative
+// where the beam has no light at all.
 float profile(int i, vec3 dir) {
   float ct = dot(lampAxis[i].xyz, dir);
   float c = lampAxis[i].w;
-  return ct > 0.0 ? (ct * ct - c) / (1.0 - c) : -1.0;
+  return ct > c ? pow((ct - c) / (1.0 - c), BEAM_EXPONENT) : -1.0;
 }
 
 // Field-distance d_i(x) = 1 / sqrt(F_i(x)), INF where the field is zero.
@@ -50,14 +52,15 @@ float field(int i, vec3 x) {
   return d < INF ? 1.0 / (d * d) : 0.0;
 }
 
-// ∇d_i at a point inside lamp i's cone.
+// ∇d_i at a point inside lamp i's cone. With d = r / (√P p) and d log p / d cos θ = m / (cos θ - c),
+// ∇d = (w - m (a - cos θ w) / (cos θ - c)) / (√P p).
 vec3 fieldDistanceGradient(int i, vec3 x) {
   vec3 w = normalize(x - lampOrigin[i].xyz);
   vec3 a = lampAxis[i].xyz;
   float c = lampAxis[i].w;
   float ct = dot(a, w);
-  float p = (ct * ct - c) / (1.0 - c);
-  return (w - 2.0 * ct * (a - ct * w) / (p * (1.0 - c))) / (lampOrigin[i].w * p);
+  float p = pow((ct - c) / (1.0 - c), BEAM_EXPONENT);
+  return (w - BEAM_EXPONENT * (a - ct * w) / (ct - c)) / (lampOrigin[i].w * p);
 }
 
 // Interval of the ray ro + t rd, t in [0, tMax], inside lamp i's cutoff cone and range ball.
@@ -95,15 +98,19 @@ vec2 coneSpan(int i, vec3 ro, vec3 rd, float tMax) {
   return vec2(t0, t1);
 }
 
-// Each lamp's emission directions are mapped perspectively onto [0,1]², the square circumscribing
-// its cutoff cone. The maps share one square atlas, lamp i in cell atlasCell(i); spare cells are unused.
+// Each lamp's emission directions are mapped onto [0,1]², a square a little wider than its cutoff cone
+// (MAP_MARGIN in scene.js). Along each axis of the map, a direction is placed by its angle off the lamp's
+// axis as seen along the other one, atan(s) for its slope s against the lamp's axis, so the texels are
+// spread about evenly over the angles of the beam. A perspective map, placing directions by s itself,
+// would crowd almost all of them into the edge of a wide beam. The maps share one square atlas, lamp i in
+// cell atlasCell(i); spare cells are unused.
 vec2 mapUV(int i, vec3 d) {
   vec2 s = vec2(dot(d, lampRight[i].xyz), dot(d, lampUp[i].xyz));
-  return 0.5 * s / (dot(d, lampAxis[i].xyz) * lampRight[i].w) + 0.5;
+  return 0.5 * atan(s, vec2(dot(d, lampAxis[i].xyz))) / lampRight[i].w + 0.5;
 }
 
 vec3 mapDirection(int i, vec2 uv) {
-  vec2 s = (2.0 * uv - 1.0) * lampRight[i].w;
+  vec2 s = tan((2.0 * uv - 1.0) * lampRight[i].w);
   return normalize(lampAxis[i].xyz + s.x * lampRight[i].xyz + s.y * lampUp[i].xyz);
 }
 

@@ -1,7 +1,7 @@
 import { hueColor } from './scene.js';
 
 // Colours for the lamps such that patches that meet differ: the lamps, busiest first, each take the hue
-// furthest round the colour wheel from those of the lamps it shares the longest seams with. `owner` is
+// furthest round the colour wheel from those of the lamps it shares the longest borders with. `owner` is
 // the lamp lighting each vertex of `samples` (measure() in optimizer.js), -1 where none does.
 export function contrastColors({ count, offsets, neighbours }, owner, lamps) {
   const shared = Array.from({ length: lamps }, () => new Map());

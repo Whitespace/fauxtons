@@ -3,7 +3,7 @@
 // brighter and reached by its own light. Slow, but it makes an independent check of the sweep.
 
 import { transformPoint } from './mat4.js';
-import { P_MIN, RANGE, SURFACE_GAP } from './scene.js';
+import { P_MIN, RANGE, SURFACE_GAP, beamProfile } from './scene.js';
 
 // Light is tested at points this far apart along each ray, so stretches of other light shorter than
 // that can slip through.
@@ -13,8 +13,7 @@ export function createReference(lamps, triangles, step = STEP) {
   const bvh = triangles ? buildBvh(triangles) : null;
 
   function profile(lamp, wx, wy, wz) {
-    const ct = lamp.axis[0] * wx + lamp.axis[1] * wy + lamp.axis[2] * wz;
-    return ct > 0 ? (ct * ct - lamp.c) / (1 - lamp.c) : -1;
+    return beamProfile(lamp.axis[0] * wx + lamp.axis[1] * wy + lamp.axis[2] * wz);
   }
 
   function fieldDistance(k, x, y, z) {
@@ -207,9 +206,10 @@ export function compareWithReference({ lamps, layout, reference, reachAt, sample
       pairs++;
       const d = [0, 1, 2].map((k) => x[k] - lamp.position[k]);
       const r = Math.hypot(...d);
+      // As mapUV() in common.glsl.
       const z = d[0] * lamp.axis[0] + d[1] * lamp.axis[1] + d[2] * lamp.axis[2];
-      const u = 0.5 * (d[0] * lamp.right[0] + d[1] * lamp.right[1] + d[2] * lamp.right[2]) / (z * lamp.cutoffTan) + 0.5;
-      const v = 0.5 * (d[0] * lamp.up[0] + d[1] * lamp.up[1] + d[2] * lamp.up[2]) / (z * lamp.cutoffTan) + 0.5;
+      const u = (0.5 * Math.atan2(d[0] * lamp.right[0] + d[1] * lamp.right[1] + d[2] * lamp.right[2], z)) / lamp.mapAngle + 0.5;
+      const v = (0.5 * Math.atan2(d[0] * lamp.up[0] + d[1] * lamp.up[1] + d[2] * lamp.up[2], z)) / lamp.mapAngle + 0.5;
       const tx = Math.min(mapSize - 1, Math.max(0, Math.floor(u * mapSize))) + (i % atlasSide) * mapSize;
       const ty = Math.min(mapSize - 1, Math.max(0, Math.floor(v * mapSize))) + Math.floor(i / atlasSide) * mapSize;
       const reach = reachAt(tx, ty);

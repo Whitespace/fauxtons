@@ -1,4 +1,4 @@
-import { DIMMEST, P_MAX, P_MIN, RANGE, createLayout } from './scene.js';
+import { DIMMEST, P_MAX, P_MIN, RANGE, beamProfile, beamSlope, createLayout } from './scene.js';
 import { probePoints } from './samples.js';
 
 // Nudges, turns and dims the lamps inside Spot so that its walls are lit as evenly as possible: every
@@ -140,7 +140,10 @@ export class LayoutOptimizer {
       dark: measured.darkArea / measured.totalArea,
       spread: measured.spread,
       range: measured.range,
-      seams: measured.seams,
+      contrast: measured.contrast,
+      contrastWorst: measured.contrastWorst,
+      black: measured.black,
+      patches: measured.patches,
       embedded: measured.embedded,
       rejected,
     };
@@ -344,26 +347,41 @@ export function measure(samples, lamps, lit) {
   const spread = Math.exp(percentile(0.95) - percentile(0.05));
   const range = order.length ? Math.exp(logE[order.at(-1)] - logE[order[0]]) : 0;
 
-  // Seams: edges between vertices lit by different lamps, and the share of them where the brightness
-  // jumps by more than a fifth: where the two lamps would light the edge's middle that differently.
-  // Steps that push the two to match there made patches less even without making seams smoother.
-  let seamEdges = 0;
-  let jumps = 0;
-  const middle = [0, 0, 0];
+  const cells = patchesOf(samples, lit);
+  const light = new Float32Array(count);
+  for (let s = 0; s < count; s++) light[s] = owner[s] >= 0 ? Math.exp(logE[s]) : 0;
+
+  // Each patch's light where its border with another crosses the mesh's edges, as its darkest points are
+  // mostly there. The vertices alone would find them unevenly: a vertex where several patches meet belongs
+  // to just one of them. Where the border is the two lamps' veil, it crosses an edge where their fields
+  // are equal.
+  const border = [];
+  const point = [0, 0, 0];
   const across = [0, 0, 0];
   for (let s = 0; s < count; s++) {
     if (owner[s] < 0) continue;
     for (let k = offsets[s]; k < offsets[s + 1]; k++) {
       const t = neighbours[k];
       if (t <= s || owner[t] < 0 || owner[t] === owner[s]) continue;
-      seamEdges++;
-      for (let m = 0; m < 3; m++) {
-        middle[m] = (positions[3 * s + m] + positions[3 * t + m]) / 2;
-        across[m] = normals[3 * s + m] + normals[3 * t + m];
+      const a = lamps[owner[s]];
+      const b = lamps[owner[t]];
+      const lead = (f) => {
+        for (let m = 0; m < 3; m++) {
+          point[m] = (1 - f) * positions[3 * s + m] + f * positions[3 * t + m];
+          across[m] = (1 - f) * normals[3 * s + m] + f * normals[3 * t + m];
+        }
+        return Math.log(fieldAt(a, point) / fieldAt(b, point));
+      };
+      let lo = 0;
+      let hi = 1;
+      if (!(lead(lo) >= 0 && lead(hi) <= 0 && lead(lo) > lead(hi))) continue;
+      for (let n = 0; n < 16; n++) {
+        const f = (lo + hi) / 2;
+        if (lead(f) >= 0) lo = f; else hi = f;
       }
+      lead(lo);
       const unit = normalize(across);
-      const ratio = irradiance(lamps[owner[s]], middle, unit) / irradiance(lamps[owner[t]], middle, unit);
-      if (!(Math.abs(Math.log(ratio)) <= Math.log(1.2))) jumps++;
+      border.push([owner[s], irradiance(a, point, unit)], [owner[t], irradiance(b, point, unit)]);
     }
   }
 
@@ -382,8 +400,57 @@ export function measure(samples, lamps, lit) {
     cost: (deviation + DARK_PENALTY * darkArea) / totalArea,
     spread,
     range,
-    seams: seamEdges ? jumps / seamEdges : 0,
+    ...patchContrast(cells, light, border),
   };
+}
+
+// The patch every vertex is in, from the probe's findings `lit` (probe.frag): the lamp lighting it, and
+// where none does, the patch of the nearest lit vertex along the mesh's edges, so that a dark spot is a
+// hole in the patch around it. -1 only where no vertex is lit.
+export function patchesOf({ count, offsets, neighbours }, lit) {
+  const cells = new Int32Array(count);
+  const queue = new Int32Array(count);
+  let tail = 0;
+  for (let v = 0; v < count; v++) {
+    cells[v] = lit[4 * v];
+    if (cells[v] >= 0) queue[tail++] = v;
+  }
+  for (let head = 0; head < tail; head++) {
+    const v = queue[head];
+    for (let k = offsets[v]; k < offsets[v + 1]; k++) {
+      const u = neighbours[k];
+      if (cells[u] >= 0) continue;
+      cells[u] = cells[v];
+      queue[tail++] = u;
+    }
+  }
+  return cells;
+}
+
+// How evenly each patch is lit, from the patch `cells` each vertex is in (-1 for none), the `light` there
+// and more points of patches as [patch, light] pairs: the ratio of the patch's brightest point to its
+// darkest. The dimmers can even out whole patches against each other, but not a patch in itself. A patch
+// with a point getting less than a hundredth of its brightest light has a black spot; of the others, the
+// median ratio and the greatest.
+export function patchContrast(cells, light, more = []) {
+  const extremes = new Map();
+  const include = (cell, value) => {
+    if (cell < 0) return;
+    const e = extremes.get(cell) ?? { brightest: 0, darkest: Infinity };
+    e.brightest = Math.max(e.brightest, value);
+    e.darkest = Math.min(e.darkest, value);
+    extremes.set(cell, e);
+  };
+  cells.forEach((cell, v) => include(cell, light[v]));
+  for (const [cell, value] of more) include(cell, value);
+  const ratios = [];
+  let black = 0;
+  for (const { brightest, darkest } of extremes.values()) {
+    if (darkest * 100 >= brightest) ratios.push(brightest / darkest);
+    else black++;
+  }
+  ratios.sort((a, b) => a - b);
+  return { patches: extremes.size, black, contrast: ratios[ratios.length >> 1] ?? 0, contrastWorst: ratios.at(-1) ?? 0 };
 }
 
 // Irradiance of a described lamp (createLayout() in scene.js) on the surface at x with unit normal n
@@ -393,9 +460,9 @@ export function irradiance(lamp, x, n) {
   const r = Math.hypot(d[0], d[1], d[2]);
   if (r > RANGE) return 0;
   const ct = (lamp.axis[0] * d[0] + lamp.axis[1] * d[1] + lamp.axis[2] * d[2]) / r;
-  const p = (ct * ct - lamp.c) / (1 - lamp.c);
+  const p = beamProfile(ct);
   const cosine = -(n[0] * d[0] + n[1] * d[1] + n[2] * d[2]) / r;
-  if (ct <= 0 || p < P_MIN || cosine <= 0) return 0;
+  if (p < P_MIN || cosine <= 0) return 0;
   return (lamp.power * p * p * cosine) / (r * r);
 }
 
@@ -408,10 +475,9 @@ export function jacobian(lamp, x, n, row) {
   const w = d.map((v) => v / r);
   const ct = a[0] * w[0] + a[1] * w[1] + a[2] * w[2];
   const cosine = -(n[0] * w[0] + n[1] * w[1] + n[2] * w[2]);
-  const p = (ct * ct - lamp.c) / (1 - lamp.c);
-  if (ct <= 0 || p < P_MIN || cosine <= 0) return false;
-  // u = log P + 2 log p + log cos - 2 log r, with ∂u/∂ct = 4 ct / (ct² - c).
-  const k = (4 * ct) / (ct * ct - lamp.c);
+  if (beamProfile(ct) < P_MIN || cosine <= 0) return false;
+  // u = log P + 2 log p + log cos - 2 log r, with ∂u/∂ct = 2 d log p / d ct.
+  const k = 2 * beamSlope(ct);
   for (let m = 0; m < 3; m++) {
     const profile = (-k * (a[m] - ct * w[m])) / r;
     const incidence = (n[m] + cosine * w[m]) / (r * cosine);
@@ -428,8 +494,8 @@ export function fieldAt(lamp, y) {
   const d = [y[0] - lamp.position[0], y[1] - lamp.position[1], y[2] - lamp.position[2]];
   const r = Math.hypot(d[0], d[1], d[2]);
   const ct = (lamp.axis[0] * d[0] + lamp.axis[1] * d[1] + lamp.axis[2] * d[2]) / r;
-  const p = (ct * ct - lamp.c) / (1 - lamp.c);
-  return r > RANGE || ct <= 0 || p < P_MIN ? 0 : (lamp.power * p * p) / (r * r);
+  const p = beamProfile(ct);
+  return r > RANGE || p < P_MIN ? 0 : (lamp.power * p * p) / (r * r);
 }
 
 // Derivatives of log F at y with respect to the lamp's parameters, as in jacobian(), into `row`. False
@@ -440,9 +506,8 @@ export function fieldJacobian(lamp, y, row) {
   const r = Math.hypot(d[0], d[1], d[2]);
   const w = d.map((v) => v / r);
   const ct = a[0] * w[0] + a[1] * w[1] + a[2] * w[2];
-  const p = (ct * ct - lamp.c) / (1 - lamp.c);
-  if (ct <= 0 || p < P_MIN) return false;
-  const k = (4 * ct) / (ct * ct - lamp.c);
+  if (beamProfile(ct) < P_MIN) return false;
+  const k = 2 * beamSlope(ct);
   for (let m = 0; m < 3; m++) row[m] = (-k * (a[m] - ct * w[m])) / r + (2 * w[m]) / r;
   row[3] = k * (w[0] * lamp.right[0] + w[1] * lamp.right[1] + w[2] * lamp.right[2]);
   row[4] = k * (w[0] * lamp.up[0] + w[1] * lamp.up[1] + w[2] * lamp.up[2]);
@@ -467,8 +532,8 @@ export function extendedLight(lamp, x, n, row) {
   let profile;
   let k;  // ∂u/∂ct, for u the log of the light
   if (theta <= cutoff) {
-    profile = (ct * ct - lamp.c) / (1 - lamp.c);
-    k = (4 * ct) / (ct * ct - lamp.c);
+    profile = beamProfile(ct);
+    k = 2 * beamSlope(ct);
   } else {
     profile = P_MIN * Math.exp(-(theta - cutoff) / EXTENSION);
     k = 2 / (EXTENSION * Math.max(Math.sin(theta), 1e-3));

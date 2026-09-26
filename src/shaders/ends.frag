@@ -3,7 +3,9 @@
 // that edge as the solver sees it, through the other lamp's texels, so the end distance ripples across
 // the rays; seen almost edge on, a sheet over the ripples folds into stripes. A Gaussian blur several
 // texels wide removes them, but it stops at jumps in the end distance, so the walls standing on them
-// stay sharp.
+// stay sharp. Rays whose light ended on a veil or a surface ended exactly there (refine.frag) and keep
+// their end distance: smoothed, the two lit volumes on either side of a veil would each round it off
+// their own way, and cut into each other.
 
 uniform sampler2D uState;   // the solution, for finding jumps
 uniform sampler2D uValues;  // end distances to smooth: the solution itself on the first pass
@@ -27,6 +29,10 @@ void main() {
   if (i < 0) return;
   ivec2 p = px - atlasOrigin(i);
   float sum = value(i, p);
+  if (texelFetch(uState, px, 0).g > -0.5 || texelFetch(uState, px, 0).g < -1.5) {
+    outEnd = sum;
+    return;
+  }
   float weights = 1.0;
   for (int direction = -1; direction <= 1; direction += 2) {
     ivec2 step = direction * uAxis;

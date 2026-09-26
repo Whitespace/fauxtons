@@ -4,11 +4,12 @@
 //
 // Per node, two RGBA texels: (min, next) and (max, leaf), where leaf is -1 for an inner node and
 // first * 8 + count for a leaf of `count` triangles from `first`. Per triangle, three RGBA texels: a
-// corner and the two edges from it.
+// corner and the two edges from it, and with `normals` (9 floats a triangle, like `triangles`), three
+// more in `normals` for its corners' unit normals.
 
 const LEAF_SIZE = 4;
 
-export function buildBvh(triangles) {
+export function buildBvh(triangles, normals = null) {
   const count = triangles.length / 9;
   const centroids = new Float32Array(3 * count);
   for (let t = 0; t < count; t++) {
@@ -50,10 +51,12 @@ export function buildBvh(triangles) {
   const nodeData = new Float32Array(8 * nodes.length);
   nodes.forEach((node, i) => nodeData.set([...node.min, node.next, ...node.max, node.leaf], 8 * i));
   const triangleData = new Float32Array(12 * count);
+  const normalData = normals ? new Float32Array(12 * count) : null;
   order.forEach((t, i) => {
     const corner = (v, k) => triangles[9 * t + 3 * v + k];
     const edge = (v) => [0, 1, 2].map((k) => corner(v, k) - corner(0, k));
     triangleData.set([corner(0, 0), corner(0, 1), corner(0, 2), 0, ...edge(1), 0, ...edge(2), 0], 12 * i);
+    for (let v = 0; v < 3; v++) normalData?.set(normals.subarray(9 * t + 3 * v, 9 * t + 3 * v + 3), 12 * i + 4 * v);
   });
-  return { nodes: nodeData, triangles: triangleData };
+  return { nodes: nodeData, triangles: triangleData, normals: normalData };
 }

@@ -24,8 +24,8 @@ const MAX_DISTANCE = 12;
 const NEAR_WALL = 1;
 // Places stop being added once this share of the wall is lit well, or they would add less than
 // MIN_GAIN of it each, or there would be fewer than LAMPS_PER_PLACE lamps to a place, though there are
-// always MIN_PLACES if they add enough. Every place added makes seams between its patches and the
-// others', where the brightness jumps, and leaves fewer lamps to share out the wall at each place: with
+// always MIN_PLACES if they add enough. Every place added makes borders between its patches and the
+// others', where the brightness steps, and leaves fewer lamps to share out the wall at each place: with
 // 64 lamps, a fourth place makes the lighting worse all round, while 128 lamps light Spot best from 7.
 const COVERED = 0.995;
 const MIN_GAIN = 0.005;

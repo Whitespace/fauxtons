@@ -147,8 +147,9 @@ float presentFrom(int k, vec3 o, vec3 w, float ta, float tb, bool first) {
   vec3 lamp = lampOrigin[k].xyz;
   float size = sceneParams.z;
   vec3 D = o - lamp;
-  // Map coordinates along the ray, in texels from the first ray, are st = scale s / z + shift with s and
-  // z linear in t, so they move along a straight line in the map, one way on each axis.
+  // Map coordinates along the ray, in texels from the first ray, are st = scale atan(s / z) + shift with s
+  // and z linear in t (mapUV() in common.glsl), so they move one way on each axis of the map, and the ray
+  // leaves a block where s / z reaches the tangent of the angle at the block's edge.
   vec2 s0 = vec2(dot(D, lampRight[k].xyz), dot(D, lampUp[k].xyz));
   vec2 s1 = vec2(dot(w, lampRight[k].xyz), dot(w, lampUp[k].xyz));
   float z0 = dot(D, lampAxis[k].xyz);
@@ -165,10 +166,10 @@ float presentFrom(int k, vec3 o, vec3 w, float ta, float tb, bool first) {
   float decided = first ? -1.0 : ta;
   for (int step = 0; step < 1024 && t < tb; ++step) {
     float cells = exp2(float(level));
-    vec2 st = scale * (s0 + t * s1) / (z0 + t * z1) + shift;
+    vec2 st = scale * atan(s0 + t * s1, vec2(z0 + t * z1)) + shift;
     vec2 block = clamp(floor((st + 0.01 * motion) / cells), vec2(0.0), vec2(size / cells - 1.0));
     // Where the ray leaves the block.
-    vec2 edge = ((block + max(motion, 0.0)) * cells - shift) / scale;
+    vec2 edge = tan(((block + max(motion, 0.0)) * cells - shift) / scale);
     vec2 exits = (edge * z0 - s0) / (s1 - edge * z1);
     float exit = tb;
     if (motion.x != 0.0 && exits.x > t) exit = min(exit, exits.x);
@@ -237,11 +238,55 @@ float leadTurn(int k, vec3 o, vec3 w, float speed, float a, float b) {
 }
 
 // Where the light of lamp j, travelling from its lamp along the unit direction w, runs into the light of
+// lamp k where k's field is the stronger, before distance tEnd: the first such point if `first`, else any,
+// and INF if there is none. The stretches of the ray where k's field is the stronger are found by sampling
+// the lead along the ray and refining by bisection, including brief ones where the ray just grazes k's
+// side of their isolux veil.
+float runsInto(int j, int k, vec3 w, float tEnd, bool first) {
+  vec3 o = lampOrigin[j].xyz;
+  float speed = lampOrigin[j].w * profile(j, w);
+  vec2 span = coneSpan(k, o, w, tEnd);
+  if (span.x >= span.y) return INF;
+  float h = (span.y - span.x) / float(LEAD_SAMPLES);
+  float a = span.x;
+  float slopeA = leadSlope(k, o, w, speed, a);
+  float start = lead(k, o, w, speed, a) > 0.0 ? a : -1.0;  // start of the open stretch, if any
+  float found = INF;
+  for (int n = 1; n <= LEAD_SAMPLES && found >= INF; ++n) {
+    float b = span.x + float(n) * h;
+    float leadB = lead(k, o, w, speed, b);
+    float slopeB = leadSlope(k, o, w, speed, b);
+    if (start < 0.0) {
+      if (leadB > 0.0) {
+        start = leadEdge(k, o, w, speed, b, a);
+      } else if (slopeA > 0.0 && slopeB < 0.0) {
+        float peak = leadTurn(k, o, w, speed, a, b);
+        if (lead(k, o, w, speed, peak) > 0.0) {
+          float from = leadEdge(k, o, w, speed, peak, a);
+          found = presentFrom(k, o, w, from, leadEdge(k, o, w, speed, peak, b), first);
+        }
+      }
+    } else if (leadB <= 0.0) {
+      found = presentFrom(k, o, w, start, leadEdge(k, o, w, speed, a, b), first);
+      start = -1.0;
+    } else if (slopeA < 0.0 && slopeB > 0.0) {
+      float dip = leadTurn(k, o, w, speed, a, b);
+      if (lead(k, o, w, speed, dip) <= 0.0) {
+        found = presentFrom(k, o, w, start, leadEdge(k, o, w, speed, a, dip), first);
+        start = leadEdge(k, o, w, speed, b, dip);
+      }
+    }
+    a = b;
+    slopeA = slopeB;
+  }
+  if (found >= INF && start >= 0.0) found = presentFrom(k, o, w, start, span.y, first);
+  return found;
+}
+
+// Where the light of lamp j, travelling from its lamp along the unit direction w, runs into the light of
 // a lamp with a stronger field before distance tEnd: the first such point if `first`, else any, and INF
-// if there is none. `stopper` is the lamp whose light it runs into there, and `partner` the same lamp
-// where the two meet head on, at their isolux veil, else -1. The stretches of the ray where another
-// lamp's field is the stronger are found by sampling the lead along the ray and refining by bisection,
-// including brief ones where the ray just grazes the other lamp's side of their isolux veil.
+// if there is none (runsInto()). `stopper` is the lamp whose light it runs into there, and `partner` the
+// same lamp where the two meet head on, at their isolux veil, else -1.
 float extinction(int j, vec3 w, float tEnd, bool first, out int partner, out int stopper) {
   vec3 o = lampOrigin[j].xyz;
   float speed = lampOrigin[j].w * profile(j, w);
@@ -250,41 +295,7 @@ float extinction(int j, vec3 w, float tEnd, bool first, out int partner, out int
   stopper = -1;
   for (int k = 0; k < LAMP_COUNT; ++k) {
     if (k == j) continue;
-    vec2 span = coneSpan(k, o, w, min(tEnd, best));
-    if (span.x >= span.y) continue;
-    float h = (span.y - span.x) / float(LEAD_SAMPLES);
-    float a = span.x;
-    float slopeA = leadSlope(k, o, w, speed, a);
-    float start = lead(k, o, w, speed, a) > 0.0 ? a : -1.0;  // start of the open stretch, if any
-    float found = INF;
-    for (int n = 1; n <= LEAD_SAMPLES && found >= INF; ++n) {
-      float b = span.x + float(n) * h;
-      float leadB = lead(k, o, w, speed, b);
-      float slopeB = leadSlope(k, o, w, speed, b);
-      if (start < 0.0) {
-        if (leadB > 0.0) {
-          start = leadEdge(k, o, w, speed, b, a);
-        } else if (slopeA > 0.0 && slopeB < 0.0) {
-          float peak = leadTurn(k, o, w, speed, a, b);
-          if (lead(k, o, w, speed, peak) > 0.0) {
-            float from = leadEdge(k, o, w, speed, peak, a);
-            found = presentFrom(k, o, w, from, leadEdge(k, o, w, speed, peak, b), first);
-          }
-        }
-      } else if (leadB <= 0.0) {
-        found = presentFrom(k, o, w, start, leadEdge(k, o, w, speed, a, b), first);
-        start = -1.0;
-      } else if (slopeA < 0.0 && slopeB > 0.0) {
-        float dip = leadTurn(k, o, w, speed, a, b);
-        if (lead(k, o, w, speed, dip) <= 0.0) {
-          found = presentFrom(k, o, w, start, leadEdge(k, o, w, speed, a, dip), first);
-          start = leadEdge(k, o, w, speed, b, dip);
-        }
-      }
-      a = b;
-      slopeA = slopeB;
-    }
-    if (found >= INF && start >= 0.0) found = presentFrom(k, o, w, start, span.y, first);
+    float found = runsInto(j, k, w, min(tEnd, best), first);
     if (found < best) {
       best = found;
       stopper = k;

@@ -1,3 +1,5 @@
+import { ICOSAHEDRON } from './scene.js';
+
 // Refinement of a triangle mesh by Phong tessellation (Boubekeur and Alexa, 2008). Every triangle is
 // split into n² smaller ones, and the new vertices are placed on the smooth surface that the vertex
 // normals describe, so that the outline and the shadows of the mesh follow the surface its shading
@@ -85,4 +87,16 @@ export function phongTessellate({ positions, normals, indices }, n) {
     indices: new Uint32Array(outIndices),
     bounds: { min, max },
   };
+}
+
+// A sphere of unit radius: an icosahedron with each triangle split n² ways and pushed out onto it.
+export function sphereMesh(n) {
+  const { vertices, faces } = ICOSAHEDRON;
+  const unit = new Float32Array(vertices.flatMap((v) => v.map((x) => x / Math.hypot(...v))));
+  const mesh = phongTessellate({ positions: unit, normals: unit, indices: new Uint32Array(faces.flat()) }, n);
+  for (let v = 0; v < mesh.positions.length; v += 3) {
+    const length = Math.hypot(mesh.positions[v], mesh.positions[v + 1], mesh.positions[v + 2]);
+    for (let k = 0; k < 3; k++) mesh.normals[v + k] = mesh.positions[v + k] /= length;
+  }
+  return { ...mesh, bounds: { min: [-1, -1, -1], max: [1, 1, 1] } };
 }

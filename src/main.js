@@ -1,20 +1,37 @@
 import { TurntableCamera } from './camera.js';
 import { clusterLayout } from './clusters.js';
 import { contrastColors } from './colors.js';
+import { cellsOf, createDiffusion } from './diffusion.js';
 import { createGeometry } from './geometry.js';
-import { phongTessellate } from './mesh.js';
+import { phongTessellate, sphereMesh } from './mesh.js';
 import { parseObj } from './obj.js';
 import { LayoutOptimizer, interiorPlaces, measure } from './optimizer.js';
 import { Renderer, SHADER_FILES } from './renderer.js';
 import { probePoints, vertexSamples } from './samples.js';
-import { HALF_ANGLE, P_MAX, SPOT_REFINEMENT, createLayout, icosahedronLamps } from './scene.js';
+import {
+  CUTOFF_ANGLE,
+  DARK_ANGLE,
+  HALF_BRIGHT_ANGLE,
+  ORB_DIAMETER,
+  ORB_REFINEMENT,
+  P_MAX,
+  SPOT_HEIGHT,
+  SPOT_REFINEMENT,
+  createLayout,
+  icosahedronLamps,
+  orbLamps,
+  standingModel,
+} from './scene.js';
 import { decodeView, encodeView } from './view-state.js';
 
 const deg = Math.PI / 180;
 
-// Lamp counts on offer, and the one shown first.
+// Lamp counts on offer in Spot, and the one shown first.
 const COUNTS = [20, 32, 48, 64, 96, 128];
 const DEFAULT_COUNT = 64;
+
+// How far light spreads sideways in the shell, in millimetres, for viewing (diffusion.js).
+const SPREADS = [0, 1, 2, 4, 8, 16];
 
 async function fetchText(url) {
   const response = await fetch(url);
@@ -28,28 +45,32 @@ async function main() {
   if (!gl) throw new Error('WebGL2 is not available.');
   canvas.addEventListener('webglcontextlost', () => (document.body.dataset.error = 'The GPU reset the page’s WebGL context. Reload to carry on.'));
 
+  // The scene is Spot, whose lamps can be placed and optimised, or the orb, whose lamps are as built.
+  const orb = decodeView(location.hash).options.scene === 'orb';
   const [obj, ...sources] = await Promise.all([
-    fetchText('spot_triangulated.obj'),
+    orb ? null : fetchText('spot_triangulated.obj'),
     ...SHADER_FILES.map((name) => fetchText(`src/shaders/${name}`)),
   ]);
   const shaders = Object.fromEntries(SHADER_FILES.map((name, k) => [name, sources[k]]));
-  // The lamps are inside Spot, so the sides of its walls that they light face inwards.
-  const mesh = phongTessellate(parseObj(obj), SPOT_REFINEMENT);
+  // The lamps are inside, so the sides of the walls that they light face inwards.
+  const mesh = orb ? sphereMesh(ORB_REFINEMENT) : phongTessellate(parseObj(obj), SPOT_REFINEMENT);
   mesh.normals.forEach((value, k) => (mesh.normals[k] = -value));
-  const renderer = new Renderer(gl, shaders, mesh, createLayout(icosahedronLamps([0, 10.31, -0.03], 0.5)));
+  const model = standingModel(mesh.bounds, orb ? ORB_DIAMETER : SPOT_HEIGHT);
+  const renderer = new Renderer(gl, shaders, mesh, model, createLayout(orb ? orbLamps() : icosahedronLamps([0, 10.31, -0.03], 0.5)));
 
-  // Spot's vertices, where the lighting is measured, and its triangles on the CPU for placing lamps.
-  const samples = vertexSamples(mesh, renderer.spot.model);
+  // The surface's vertices, where the lighting is measured, and its triangles on the CPU for placing lamps.
+  const samples = vertexSamples(mesh, model);
   const geometry = createGeometry(renderer.spotTriangles);
   const probe = renderer.createProbe(probePoints(samples));
+  const diffusion = createDiffusion(samples, mesh.indices);
   let places = null;
 
-  // Right round Spot, short of straight above or below, where the turntable's up direction is lost.
+  // Right round the scene, short of straight above or below, where the turntable's up direction is lost.
   const camera = new TurntableCamera(canvas, {
-    target: [0, 10.3, 0],
+    target: orb ? [0, ORB_DIAMETER / 2, 0] : [0, 10.3, 0],
     azimuth: 202 * deg,
     elevation: 15 * deg,
-    distance: 55,
+    distance: orb ? 60 : 55,
     fovy: 40 * deg,
     minElevation: -89 * deg,
     maxElevation: 89 * deg,
@@ -57,30 +78,62 @@ async function main() {
     maxDistance: 150,
   });
 
-  // spot: show Spot's surface (its walls stop the light either way). bounds: draw the boundaries of the
-  // lit volumes instead of the light in the air.
-  const options = { spot: true, veil: true, bounds: false, count: DEFAULT_COUNT };
+  // spot: show the surface (its walls stop the light either way). bounds: draw the boundaries of the lit
+  // volumes instead of the light in the air. opaque: draw the veils and boundaries as solid sheets, and
+  // opaque2: the same from the boundary meshes. cull: show only the cell each pixel's view meets first.
+  const options = { spot: true, veil: true, bounds: false, opaque: false, opaque2: false, cull: false, count: DEFAULT_COUNT, scene: orb ? 'orb' : 'spot', spread: 0 };
   const toggles = new Map([...document.querySelectorAll('[data-toggle]')].map((button) => [button.dataset.toggle, button]));
   const setOption = (key, value) => {
     options[key] = value;
     toggles.get(key).setAttribute('aria-pressed', String(value));
   };
-  for (const [key, button] of toggles) button.addEventListener('click', () => setOption(key, !options[key]));
+  // The two opaque modes draw the same walls two ways, so turning one on turns the other off.
+  const rival = { opaque: 'opaque2', opaque2: 'opaque' };
+  for (const [key, button] of toggles) {
+    button.addEventListener('click', () => {
+      setOption(key, !options[key]);
+      if (options[key] && rival[key]) setOption(rival[key], false);
+    });
+  }
 
-  // The layout shown, as the optimiser keeps it (LayoutOptimizer.saveable()), and how well it lights Spot.
+  const control = (name) => document.querySelector(`[data-control="${name}"]`);
   const readout = document.querySelector('.readout');
-  const countPicker = document.querySelector('[data-control="count"]');
+  const countPicker = control('count');
+  const spreadPicker = control('spread');
+  const scenePicker = control('scene');
   const optimizeButton = document.querySelector('[data-action="optimize"]');
   countPicker.replaceChildren(...COUNTS.map((n) => new Option(`${n} lamps`, n)));
+  spreadPicker.replaceChildren(...SPREADS.map((mm) => new Option(mm ? `Spread ${mm} mm` : 'No spread', mm)));
+  scenePicker.value = options.scene;
+  // The orb's lamps are where they were built.
+  for (const element of [countPicker, optimizeButton, ...document.querySelectorAll('[data-action="reset"], [data-action="save-layout"]')]) element.hidden = orb;
+
+  // The layout shown, as the optimiser keeps it (LayoutOptimizer.saveable()), how well it lights the
+  // surface, and what the probe found for it, for diffusing its light.
   let layout = null;
   let optimizer = null;
   let loading = null;
+  let found = null;
 
-  const describe = (m, prefix = '') => {
-    const pct = (v) => `${(100 * v).toFixed(v < 0.1 ? 1 : 0)}%`;
-    return `${prefix}${pct(m.dark)} dark · brightest to dimmest ${m.spread.toFixed(1)}× · ${pct(m.seams)} of seams jump`;
+  // How much of the surface is dark, and how evenly each patch is lit: its brightest point over its
+  // darkest (patchContrast() in optimizer.js), always from the light arriving.
+  const pct = (v) => `${(100 * v).toFixed(v < 0.1 ? 1 : 0)}%`;
+  const times = (v) => `${v.toFixed(v < 10 ? 1 : 0)}×`;
+  const describe = (m, prefix = '') =>
+    `${prefix}${pct(m.dark)} dark · black spots in ${m.black}/${m.patches} patches · brightest/darkest ${times(m.contrast)} median, ${times(m.contrastWorst)} worst`;
+  const metricsOf = (m) => ({ dark: m.darkArea / m.totalArea, patches: m.patches, black: m.black, contrast: m.contrast, contrastWorst: m.contrastWorst, cost: m.cost });
+
+  // Shows the light leaving the shell with the spread chosen, or with none the light arriving.
+  const diffuse = () => {
+    if (!found || !layout?.metrics) return;
+    readout.textContent = describe(layout.metrics);
+    if (!options.spread) {
+      renderer.setDiffusion(null);
+      return;
+    }
+    const { owner, E } = cellsOf(samples, found.lamps, found.lit);
+    renderer.setDiffusion({ owner, light: diffusion.apply(owner, E, options.spread) });
   };
-  const metricsOf = (m) => ({ dark: m.darkArea / m.totalArea, spread: m.spread, seams: m.seams, cost: m.cost });
 
   // Shows a layout at full resolution and measures it. Lamps without colours, and all of them with
   // `recolor`, get colours that differ between patches that meet.
@@ -89,14 +142,16 @@ async function main() {
     const described = createLayout(next.lamps);
     renderer.setLayout(described);
     renderer.solve();
-    const measured = measure(samples, described.lamps, probe.run());
+    const lit = Float32Array.from(probe.run());
+    found = { lamps: described.lamps, lit };
+    const measured = measure(samples, described.lamps, lit);
     layout.metrics = metricsOf(measured);
     if (recolor || next.lamps.some((lamp) => !lamp.color)) {
       const colors = contrastColors(samples, measured.owner, next.lamps.length);
       next.lamps.forEach((lamp, i) => (lamp.color = colors[i]));
       renderer.setColors(colors);
     }
-    readout.textContent = describe(layout.metrics);
+    diffuse();
     return measured;
   };
 
@@ -127,10 +182,13 @@ async function main() {
     else placeLamps(count);
   };
 
+  // While optimising, the surface shows the light arriving, as the diffusion is of the layout last shown.
   const startOptimizing = () => {
     if (!layout) return;
     optimizer = new LayoutOptimizer({ renderer, samples, geometry, layout });
     optimizeButton.setAttribute('aria-pressed', 'true');
+    found = null;
+    renderer.setDiffusion(null);
   };
   // Stops, keeping the best layout found, shown at full resolution.
   function stopOptimizing(keep = true) {
@@ -146,6 +204,18 @@ async function main() {
   document.querySelector('[data-action="reset"]').addEventListener('click', () => {
     stopOptimizing(false);
     placeLamps(options.count);
+  });
+  // The picker offers SPREADS; a link can ask for any other.
+  const setSpread = (spread) => {
+    options.spread = spread >= 0 ? spread : options.spread;
+    spreadPicker.value = String(options.spread);
+    diffuse();
+  };
+  spreadPicker.addEventListener('change', () => setSpread(Number(spreadPicker.value)));
+  // A scene is built for its surface, so another one starts the page afresh.
+  scenePicker.addEventListener('change', () => {
+    location.hash = `scene=${scenePicker.value}`;
+    location.reload();
   });
 
   const flash = (button, label, rest) => {
@@ -186,10 +256,19 @@ async function main() {
 
   const applyView = (hash) => {
     const view = decodeView(hash);
+    if ((view.options.scene ?? options.scene) !== options.scene) {
+      location.reload();
+      return;
+    }
     camera.jumpTo({ ...camera.goal, ...view.camera });
     for (const [key, value] of Object.entries(view.options)) if (value !== undefined && toggles.has(key)) setOption(key, value);
-    const count = COUNTS.includes(view.options.count) ? view.options.count : options.count;
-    if (count !== options.count || !layout) useCount(count);
+    if (orb) {
+      if (!layout) show({ lamps: orbLamps(), centers: [] });
+    } else {
+      const count = COUNTS.includes(view.options.count) ? view.options.count : options.count;
+      if (count !== options.count || !layout) useCount(count);
+    }
+    setSpread(view.options.spread ?? options.spread);
   };
   applyView(location.hash);
   window.addEventListener('hashchange', () => applyView(location.hash));
@@ -235,12 +314,11 @@ async function main() {
   requestAnimationFrame(frame);
 
   // Console hooks: fauxton.check() compares the solution in the air with the README's recursive
-  // definition and fauxton.checkSurfaces() which lamp lights Spot's walls. fauxton.place(settings)
-  // places the lamps afresh, with settings for clusterLayout() such as maxClusters.
-  // fauxton.optimize(rounds) runs the optimiser without drawing, carrying on from where the last call
-  // stopped; keep each call to a few seconds, as the GPU drops the page's context when kept busy too
-  // long. fauxton.finish() shows the best layout found, and fauxton.layout() gives the layout shown as
-  // saved in layouts/.
+  // definition and fauxton.checkSurfaces() which lamp lights the surface. fauxton.place(settings) places
+  // the lamps afresh, with settings for clusterLayout() such as maxClusters. fauxton.optimize(rounds) runs
+  // the optimiser without drawing, carrying on from where the last call stopped; keep each call to a few
+  // seconds, as the GPU drops the page's context when kept busy too long. fauxton.finish() shows the best
+  // layout found, and fauxton.layout() gives the layout shown as saved in layouts/.
   let batch = null;
   window.fauxton = {
     check: (count, bounds) => renderer.check(count, bounds),
@@ -285,7 +363,7 @@ function exportLayout({ metrics, centers, lamps }) {
   const round = (v) => Math.round(v * 1e4) / 1e4;
   return {
     count: lamps.length,
-    halfAngle: HALF_ANGLE,
+    beam: { halfBright: HALF_BRIGHT_ANGLE, dark: DARK_ANGLE, cutoff: CUTOFF_ANGLE },
     metrics: Object.fromEntries(Object.entries(metrics ?? {}).map(([key, value]) => [key, round(value)])),
     centers: centers.map((center) => center.map(round)),
     lamps: lamps.map(({ position, axis, power, cluster, color }) => ({
