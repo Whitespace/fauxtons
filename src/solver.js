@@ -12,6 +12,15 @@ const START_DISTANCE = 0.004;
 // ran into light the sweep stepped over; the second, rays whose light ran into light the first corrected.
 const REFINE_PASSES = 2;
 
+// A solve from sight ends once a pass changes no ray by more than a thousandth of its distance, or no longer
+// cuts the number that change by a tenth: a few hundred rays, ending at the walls where patches meet, flip
+// between two answers from pass to pass however long it runs, as they do when the sweep's solution is
+// refined further. SIGHT_PASSES is the most it takes, and CHANGE_BLOCK the texels a side of the blocks of
+// the maps whose changed rays are counted together (changes.frag).
+const SIGHT_PASSES = 24;
+const SETTLED = 0.9;
+const CHANGE_BLOCK = 16;
+
 // Map texels between neighbouring vertices of the veil meshes (see cells.frag) and of the lit volumes'
 // boundary meshes (see boundary.vert).
 export const VEIL_STRIDE = 8;
@@ -21,6 +30,13 @@ export const BOUNDARY_STRIDE = 1;
 // increasing field-distance, then following each ray exactly against the others' light (exact.glsl).
 // The result is an atlas of distances, one map per lamp, laid out as `layout` says (createLayout() in
 // scene.js). `bvh` holds Spot's triangles, `count` of them (bvh.js).
+//
+// Solving from sight gets there another way. It starts with every ray's light reaching as far as nothing
+// solid is in its way, then follows every ray exactly against the others' light as the last pass left it,
+// over and over, until the rays settle (SETTLED). After the first pass each lamp's light reaches where it
+// is the brightest lamp in sight all the way from the lamp; the later passes let light into the shadows of
+// light that has itself been cut short. Every cut depends only on light at smaller field-distances, so the
+// passes settle on the same solution as the sweep (README).
 export class ExtinctionSolver {
   constructor(gl, { programs, fullscreen, bvh, layout }) {
     this.gl = gl;
@@ -81,11 +97,17 @@ export class ExtinctionSolver {
     this.boundaryTargets = null;
 
     // Bounds of the reach over blocks of each map, level L of the blocks at mip L - 1 (see
-    // reach-bounds.frag).
+    // reach-bounds.frag): of the published solution, and of the one a solve from sight is working on,
+    // made when first needed.
     this.boundsLevels = Math.log2(mapSize);
-    this.bounds = texture(size / 2, size / 2, gl.RG32F, gl.NEAREST, this.boundsLevels);
-    this.boundsFbos = Array.from({ length: this.boundsLevels }, (_, m) => framebuffer([this.bounds], null, m));
+    this.pyramids = [this.createPyramid()];
+    this.publishedPyramid = 0;
+    // For counting the rays that differ between two solutions (countChanges()), made when first needed.
+    this.changeTarget = null;
 
+    // 'sweep' or 'sight', and for a solve from sight, the rays each pass changed (changes.frag).
+    this.method = 'sweep';
+    this.changes = [];
     this.pass = 0;
     this.passCount = 0;
     // Solutions published so far, and the one each copy for display was last made from.
@@ -108,17 +130,33 @@ export class ExtinctionSolver {
     return this.occluders[this.publishedOccluder];
   }
 
+  get pyramid() {
+    return this.pyramids[this.publishedPyramid];
+  }
+
   get busy() {
     return this.pass < this.passCount;
   }
 
-  // Starts solving for `lamps`, which the Lamps uniform block must already hold.
-  start(lamps) {
+  createPyramid() {
+    const { gl, size, boundsLevels, owned } = this;
+    const texture = createTexture(gl, size / 2, size / 2, gl.RG32F, gl.NEAREST, boundsLevels);
+    const fbos = Array.from({ length: boundsLevels }, (_, m) => createFramebuffer(gl, [texture], null, m));
+    owned.textures.push(texture);
+    owned.fbos.push(...fbos);
+    return { texture, fbos };
+  }
+
+  // Starts solving for `lamps`, which the Lamps uniform block must already hold, by the sweep or, with
+  // `method` 'sight', from sight.
+  start(lamps, method = 'sweep') {
     const { gl, programs, bvh, size, atlasSide, mapSize } = this;
     const fastest = Math.max(...lamps.map((lamp) => lamp.sqrtPower));
     const slowest = Math.min(...lamps.map((lamp) => lamp.sqrtPower)) * P_MIN;
     this.firstTime = START_DISTANCE / fastest;
-    this.passCount = Math.ceil(Math.log(RANGE / slowest / this.firstTime) / Math.log(STEP_RATIO)) + 1;
+    this.method = method;
+    this.changes = [];
+    this.passCount = method === 'sight' ? SIGHT_PASSES : Math.ceil(Math.log(RANGE / slowest / this.firstTime) / Math.log(STEP_RATIO)) + 1;
 
     // The distance to Spot along every ray, one map at a time (see occluder.vert).
     this.solving = 1 - this.publishedOccluder;
@@ -138,15 +176,17 @@ export class ExtinctionSolver {
     });
     gl.disable(gl.DEPTH_TEST);
 
+    this.pass = 0;
+    if (method === 'sight') return;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbos[this.work[0]]);
     gl.viewport(0, 0, size, size);
     gl.clearBufferfv(gl.COLOR, 0, [ALIVE, -1, 0, 0]);
-    this.pass = 0;
   }
 
-  // Runs up to `budget` sweep passes. Returns true when a new solution has been published.
+  // Runs up to `budget` passes. Returns true when a new solution has been published.
   step(budget) {
     if (!this.busy) return false;
+    if (this.method === 'sight') return this.stepFromSight(budget);
     const { gl, size } = this;
     const { program, uniforms } = this.programs.sweep;
     gl.useProgram(program);
@@ -178,9 +218,78 @@ export class ExtinctionSolver {
     return true;
   }
 
+  // Up to `budget` passes of a solve from sight (see the class's comment), each into the work texture the
+  // last didn't write, against the new distances to Spot and the bounds of the last pass's reach, kept in
+  // the pyramid the published solution doesn't use. The first lets every ray's light reach as far as it
+  // can see. The solution is published once it has settled (SETTLED).
+  stepFromSight(budget) {
+    const { gl, size } = this;
+    const refine = this.programs.refine;
+    if (this.pyramids.length < 2) this.pyramids.push(this.createPyramid());
+    const pyramid = this.pyramids[1 - this.publishedPyramid];
+    for (let n = 0; n < budget && this.busy; n++) {
+      const k = this.pass++;
+      const before = this.textures[this.work[(k + 1) % 2]];
+      const after = this.textures[this.work[k % 2]];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbos[this.work[k % 2]]);
+      gl.viewport(0, 0, size, size);
+      gl.useProgram(refine.program);
+      this.bindExact(refine, { reach: before, occluder: this.occluders[this.solving], bounds: pyramid.texture });
+      gl.uniform1i(refine.uniforms.uStart, k === 0 ? 1 : 0);
+      gl.bindVertexArray(this.fullscreen);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      this.prepareBounds(after, pyramid);
+      if (k > 0) {
+        const changed = this.countChanges(before, after);
+        const last = this.changes.at(-1);
+        this.changes.push(changed);
+        if (changed.far === 0 || (last && changed.far > SETTLED * last.far)) this.passCount = this.pass;
+      }
+    }
+    if (this.busy) return false;
+
+    const slot = (this.pass - 1) % 2;
+    [this.published, this.work[slot]] = [this.work[slot], this.published];
+    this.publishedOccluder = this.solving;
+    this.publishedPyramid = 1 - this.publishedPyramid;
+    this.version++;
+    return true;
+  }
+
+  // How many rays differ between two solutions (changes.frag): `any` however little, and `far` by more
+  // than a thousandth of their distance or in why their light ended.
+  countChanges(before, after) {
+    const { gl } = this;
+    if (!this.changeTarget) {
+      const blocks = this.size / CHANGE_BLOCK;
+      const texture = createTexture(gl, blocks, blocks, gl.RG32F);
+      this.owned.textures.push(texture);
+      const fbo = createFramebuffer(gl, [texture]);
+      this.owned.fbos.push(fbo);
+      this.changeTarget = { blocks, fbo, pixels: new Float32Array(4 * blocks * blocks) };
+    }
+    const { blocks, fbo, pixels } = this.changeTarget;
+    const changes = this.programs.changes;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, blocks, blocks);
+    gl.useProgram(changes.program);
+    bindTextures(gl, changes, { uBefore: before, uAfter: after });
+    gl.uniform1i(changes.uniforms.uBlock, CHANGE_BLOCK);
+    gl.bindVertexArray(this.fullscreen);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, blocks, blocks, gl.RGBA, gl.FLOAT, pixels);
+    let any = 0;
+    let far = 0;
+    for (let k = 0; k < pixels.length; k += 4) {
+      any += pixels[k];
+      far += pixels[k + 1];
+    }
+    return { any, far };
+  }
+
   // Makes what drawing the published solution needs, if it isn't made yet: the compact copies for the
   // fog and the veils, the cells of the veil meshes, and the boundary meshes of the lit volumes. Those
-  // borrow the sweep's work textures, so they wait while a sweep is running.
+  // borrow the solver's work textures, so they wait while a solve is running.
   prepareDisplay({ veil, bounds }) {
     const { gl, size, version, prepared } = this;
     if (prepared.copy !== version) {
@@ -210,12 +319,13 @@ export class ExtinctionSolver {
     }
   }
 
-  // What the exact tests of exact.glsl read, on the first five texture units, for a program using them.
-  bindExact(program) {
+  // What the exact tests of exact.glsl read, on the first five texture units, for a program using them: by
+  // default the published solution, with its distances to Spot and the bounds of its reach.
+  bindExact(program, { reach = this.texture, occluder = this.occluder, bounds = this.pyramid.texture } = {}) {
     bindTextures(this.gl, program, {
-      uReach: this.texture,
-      uOccluder: this.occluder,
-      uReachBounds: this.bounds,
+      uReach: reach,
+      uOccluder: occluder,
+      uReachBounds: bounds,
       uBvhNodes: this.bvh.nodes,
       uBvhTriangles: this.bvh.triangles,
     });
@@ -232,16 +342,19 @@ export class ExtinctionSolver {
     gl.viewport(0, 0, size, size);
     gl.useProgram(refine.program);
     this.bindExact(refine);
+    gl.uniform1i(refine.uniforms.uStart, 0);
     gl.bindVertexArray(this.fullscreen);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     [this.published, this.work[0]] = [target, this.published];
     this.prepareBounds();
   }
 
-  // The bounds of the reach over blocks of each map, level by level. While a level is drawn, the
-  // texture exposes only the level below to sampling, so that it doesn't read the level it writes.
-  prepareBounds() {
-    const { gl, bounds } = this;
+  // The bounds of the reach of solution `source` over blocks of each map, level by level, into `pyramid`.
+  // While a level is drawn, the texture exposes only the level below to sampling, so that it doesn't read
+  // the level it writes.
+  prepareBounds(source = this.texture, pyramid = this.pyramid) {
+    const { gl } = this;
+    const { texture: bounds, fbos } = pyramid;
     const { program, uniforms } = this.programs.reachBounds;
     gl.useProgram(program);
     gl.bindVertexArray(this.fullscreen);
@@ -249,10 +362,10 @@ export class ExtinctionSolver {
     gl.uniform1i(uniforms.uSource, 0);
     for (let level = 1; level <= this.boundsLevels; level++) {
       const size = this.size >> level;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.boundsFbos[level - 1]);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbos[level - 1]);
       gl.viewport(0, 0, size, size);
       if (level === 1) {
-        gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        gl.bindTexture(gl.TEXTURE_2D, source);
       } else {
         gl.bindTexture(gl.TEXTURE_2D, bounds);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, level - 2);

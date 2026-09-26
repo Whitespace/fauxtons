@@ -1,7 +1,7 @@
 import { buildBvh } from './bvh.js';
 import { bindTextures, createDataTexture, createDepthBuffer, createFramebuffer, createMesh, createProgram, createTexture } from './gl.js';
 import { IDENTITY, transformPoint } from './mat4.js';
-import { compareSurfacesWithReference, compareWithReference, createReference, sampleSurfaces } from './reference.js';
+import { compareSightWithReference, compareSurfacesWithReference, compareWithReference, createReference, sampleSurfaces } from './reference.js';
 import { GROUND_ALBEDO, LAMP_CAPACITY, SPOT_ALBEDO, packLamps } from './scene.js';
 import { BOUNDARY_STRIDE, ExtinctionSolver, VEIL_STRIDE } from './solver.js';
 
@@ -51,6 +51,7 @@ export const SHADER_FILES = [
   'diagonals.frag',
   'reach-bounds.frag',
   'refine.frag',
+  'changes.frag',
   'surface.vert',
   'surface.frag',
   'probe.frag',
@@ -93,6 +94,7 @@ export class Renderer {
       diagonals: program('diagonals', plain('fullscreen.vert'), shared('diagonals.frag')),
       reachBounds: program('reach-bounds', plain('fullscreen.vert'), shared('reach-bounds.frag')),
       refine: program('refine', plain('fullscreen.vert'), exact('refine.frag')),
+      changes: program('changes', plain('fullscreen.vert'), shared('changes.frag')),
       surface: program('surface', plain('surface.vert'), exact('surface.frag')),
       probe: program('probe', plain('fullscreen.vert'), exact('probe.frag')),
       visibility: program('visibility', plain('fullscreen.vert'), exact('visibility.frag')),
@@ -138,6 +140,8 @@ export class Renderer {
     this.shown = { spot: true, veil: true, bounds: false, opaque: false, opaque2: false, cull: false };
     this.diffused = null;
     this.diffusedTexture = createDataTexture(gl, new Float32Array(4), 1);
+    // How layouts are solved: 'sweep', or 'sight' to solve from sight (solver.js).
+    this.solveMethod = 'sweep';
     this.setLayout(layout);
   }
 
@@ -169,11 +173,12 @@ export class Renderer {
         layout,
       });
     }
-    this.solver.start(layout.lamps);
+    this.solver.start(layout.lamps, this.solveMethod);
     // Sweep passes per frame: under 20 ms of work at any map size and number of lamps, as every ray of
-    // every map is checked against the other lamps' light.
+    // every map is checked against the other lamps' light. A pass of a solve from sight takes much longer,
+    // so frames get one each.
     const n = layout.lamps.length;
-    this.sweepPassesPerFrame = Math.max(1, Math.round(96 * (1024 / layout.mapSize) ** 2 * (12 / Math.max(n * (n - 1), 1))));
+    this.passesPerFrame = this.solveMethod === 'sight' ? 1 : Math.max(1, Math.round(96 * (1024 / layout.mapSize) ** 2 * (12 / Math.max(n * (n - 1), 1))));
   }
 
   // New colours for the lamps of the layout shown, which leave its solution as it is.
@@ -266,7 +271,7 @@ export class Renderer {
     const height = gl.drawingBufferHeight;
     let changed = this.resize(width, height) || cameraMoved;
 
-    if (this.solver.step(this.sweepPassesPerFrame)) {
+    if (this.solver.step(this.passesPerFrame)) {
       this.published();
       changed = true;
     }
@@ -596,6 +601,14 @@ export class Renderer {
     probe.dispose();
     const reference = createReference(lamps, this.spotTriangles, step);
     return compareSurfacesWithReference({ reference, points, lit, limit });
+  }
+
+  // How much of Spot the brightest lamp in sight, which a solve from sight starts from, gets wrong, at
+  // `count` random points spread by area (compareSightWithReference() in reference.js).
+  checkSight(count = 4000) {
+    const { mesh, spot, lamps } = this;
+    const points = sampleSurfaces({ mesh, model: spot.model, withGround: false, count });
+    return compareSightWithReference({ reference: createReference(lamps, this.spotTriangles), points });
   }
 
   // A list of points to find the lamp lighting, again for each new solution. On the surfaces (see

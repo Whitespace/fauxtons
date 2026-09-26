@@ -3,6 +3,11 @@
 // stronger light, for instance just above a surface. Here each ray's light is followed as the surfaces
 // test it (extinction() in exact.glsl), against the other lamps' light as the previous pass left it.
 // The end of every ray's light is written as the sweep writes it (sweep.frag).
+//
+// With uStart, a solve from sight starts instead (solver.js): every ray's light reaches as far as nothing
+// solid is in its way.
+
+uniform bool uStart;
 
 out vec2 outState;
 
@@ -23,6 +28,6 @@ void main() {
   float stop = min(RANGE, texelFetch(uOccluder, px, 0).r);
   if (dir.y < 0.0) stop = min(stop, -o.y / dir.y);
   int partner, stopper;
-  float end = extinction(i, dir, (1.0 - SURFACE_GAP) * stop, true, partner, stopper);
+  float end = uStart ? INF : extinction(i, dir, (1.0 - SURFACE_GAP) * stop, true, partner, stopper);
   outState = end < INF ? vec2(end, float(partner)) : vec2(stop, stop < RANGE ? -2.0 : -1.0);
 }

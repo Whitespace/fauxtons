@@ -81,7 +81,8 @@ async function main() {
   // spot: show the surface (its walls stop the light either way). bounds: draw the boundaries of the lit
   // volumes instead of the light in the air. opaque: draw the veils and boundaries as solid sheets, and
   // opaque2: the same from the boundary meshes. cull: show only the cell each pixel's view meets first.
-  const options = { spot: true, veil: true, bounds: false, opaque: false, opaque2: false, cull: false, count: DEFAULT_COUNT, scene: orb ? 'orb' : 'spot', spread: 0 };
+  // sight: solve the cells from sight rather than by the sweep (solver.js).
+  const options = { spot: true, veil: true, bounds: false, opaque: false, opaque2: false, cull: false, sight: false, count: DEFAULT_COUNT, scene: orb ? 'orb' : 'spot', spread: 0 };
   const toggles = new Map([...document.querySelectorAll('[data-toggle]')].map((button) => [button.dataset.toggle, button]));
   const setOption = (key, value) => {
     options[key] = value;
@@ -93,6 +94,7 @@ async function main() {
     button.addEventListener('click', () => {
       setOption(key, !options[key]);
       if (options[key] && rival[key]) setOption(rival[key], false);
+      if (key === 'sight') useSolver();
     });
   }
 
@@ -190,6 +192,12 @@ async function main() {
     found = null;
     renderer.setDiffusion(null);
   };
+  // Solves the layout shown again, by the sweep or from sight as chosen; while optimising, the next round
+  // is solved that way.
+  function useSolver() {
+    renderer.solveMethod = options.sight ? 'sight' : 'sweep';
+    if (layout && !optimizer) show(layout);
+  }
   // Stops, keeping the best layout found, shown at full resolution.
   function stopOptimizing(keep = true) {
     if (!optimizer) return;
@@ -262,6 +270,7 @@ async function main() {
     }
     camera.jumpTo({ ...camera.goal, ...view.camera });
     for (const [key, value] of Object.entries(view.options)) if (value !== undefined && toggles.has(key)) setOption(key, value);
+    if ((options.sight ? 'sight' : 'sweep') !== renderer.solveMethod) useSolver();
     if (orb) {
       if (!layout) show({ lamps: orbLamps(), centers: [] });
     } else {
@@ -314,7 +323,8 @@ async function main() {
   requestAnimationFrame(frame);
 
   // Console hooks: fauxton.check() compares the solution in the air with the README's recursive
-  // definition and fauxton.checkSurfaces() which lamp lights the surface. fauxton.place(settings) places
+  // definition and fauxton.checkSurfaces() which lamp lights the surface; fauxton.checkSight() finds how
+  // much of the surface the brightest lamp in sight gets wrong (README). fauxton.place(settings) places
   // the lamps afresh, with settings for clusterLayout() such as maxClusters. fauxton.optimize(rounds) runs
   // the optimiser without drawing, carrying on from where the last call stopped; keep each call to a few
   // seconds, as the GPU drops the page's context when kept busy too long. fauxton.finish() shows the best
@@ -323,6 +333,7 @@ async function main() {
   window.fauxton = {
     check: (count, bounds) => renderer.check(count, bounds),
     checkSurfaces: (candidates, limit, step) => renderer.checkSurfaces(candidates, limit, step),
+    checkSight: (count) => renderer.checkSight(count),
     place: (settings = {}) => {
       stopOptimizing(false);
       places ??= interiorPlaces(samples, geometry);

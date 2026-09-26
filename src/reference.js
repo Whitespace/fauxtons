@@ -25,18 +25,27 @@ export function createReference(lamps, triangles, step = STEP) {
     return p >= P_MIN ? r / (lamp.sqrtPower * p) : Infinity;
   }
 
-  // Spot is looked for up to `clear` short of the point (see litBy() in exact.glsl).
-  function reaches(j, x, y, z, clear = 0) {
+  // Whether x is in j's cone and range with nothing solid in the way: whether j's light would get there if
+  // light never stopped other light. Spot is looked for up to `clear` short of the point (see litBy() in
+  // exact.glsl).
+  function inSight(j, x, y, z, clear = 0) {
     const lamp = lamps[j];
     const [ox, oy, oz] = lamp.position;
     const r = Math.hypot(x - ox, y - oy, z - oz);
     if (r > RANGE || y < 0) return false;
     const wx = (x - ox) / r, wy = (y - oy) / r, wz = (z - oz) / r;
-    const p = profile(lamp, wx, wy, wz);
-    if (p < P_MIN) return false;
-    if (bvh?.occludes(ox, oy, oz, wx, wy, wz, r - clear)) return false;
+    if (profile(lamp, wx, wy, wz) < P_MIN) return false;
+    return !bvh?.occludes(ox, oy, oz, wx, wy, wz, r - clear);
+  }
 
-    const speed = lamp.sqrtPower * p;
+  // Whether j's light reaches x, by the definition at the top.
+  function reaches(j, x, y, z, clear = 0) {
+    if (!inSight(j, x, y, z, clear)) return false;
+    const lamp = lamps[j];
+    const [ox, oy, oz] = lamp.position;
+    const r = Math.hypot(x - ox, y - oy, z - oz);
+    const wx = (x - ox) / r, wy = (y - oy) / r, wz = (z - oz) / r;
+    const speed = lamp.sqrtPower * profile(lamp, wx, wy, wz);
     const n = Math.max(16, Math.ceil(r / step));
     const extinguishedAt = (t) => {
       const px = ox + t * wx, py = oy + t * wy, pz = oz + t * wz;
@@ -59,7 +68,8 @@ export function createReference(lamps, triangles, step = STEP) {
   // The lamp whose light reaches the surface point x with unit normal n, or -1: of the lamps the surface
   // faces, the strongest whose light gets as close to x as the renderer tests it (SURFACE_GAP), with the
   // renderer's allowance `rough` for the facets straying from the smooth surface (litBy() in exact.glsl).
-  function litBy(x, n, rough = 0) {
+  // With `arrives` inSight, it is the brightest lamp in sight instead, as if light never stopped light.
+  function litBy(x, n, rough = 0, arrives = reaches) {
     const candidates = [];
     lamps.forEach((lamp, i) => {
       const d = [0, 1, 2].map((k) => x[k] - lamp.position[k]);
@@ -72,12 +82,12 @@ export function createReference(lamps, triangles, step = STEP) {
     for (const { i, d, skip } of candidates) {
       const p = [0, 1, 2].map((k) => lamps[i].position[k] + (1 - SURFACE_GAP) * d[k]);
       const clear = Math.max(0, skip - SURFACE_GAP * Math.hypot(...d));
-      if (reaches(i, ...p, clear)) return i;
+      if (arrives(i, ...p, clear)) return i;
     }
     return -1;
   }
 
-  return { fieldDistance, reaches, litBy };
+  return { fieldDistance, reaches, litBy, inSight };
 }
 
 // Random points on Spot and, `withGround`, as many on the ground within a few units of it, as the
@@ -188,6 +198,28 @@ export function compareSurfacesWithReference({ reference, points, lit, limit }) 
     mapsAgreement: 1 - wrong.maps.length / checked.length,
     exactWrong: wrong.exact.slice(0, 8),
   };
+}
+
+// Compares, at surface points (from sampleSurfaces()), the lamp lighting each with the brightest lamp in
+// sight there, the one a solve from sight starts from (solver.js): of the lamps the surface faces, the
+// strongest with nothing solid in the way, as if light never stopped light. Gives the shares of the points
+// the brightest lamp in sight gets wrong: where no light gets (`litWhereDark`), and where its light was
+// stopped on the way and another lamp's light gets there instead (`wrongLamp`).
+export function compareSightWithReference({ reference, points }) {
+  const count = points.positions.length / 3;
+  let dark = 0;
+  let litWhereDark = 0;
+  let wrongLamp = 0;
+  for (let s = 0; s < count; s++) {
+    const x = Array.from(points.lifted.subarray(3 * s, 3 * s + 3));
+    const n = Array.from(points.normals.subarray(3 * s, 3 * s + 3));
+    const truth = reference.litBy(x, n, points.roughness[s]);
+    const sight = reference.litBy(x, n, points.roughness[s], reference.inSight);
+    if (truth < 0) dark++;
+    if (sight !== truth && truth < 0) litWhereDark++;
+    if (sight !== truth && truth >= 0) wrongLamp++;
+  }
+  return { points: count, dark: dark / count, wrong: (litWhereDark + wrongLamp) / count, litWhereDark: litWhereDark / count, wrongLamp: wrongLamp / count };
 }
 
 // Compares the solver's published solution with the reference at random points in the air, in the box

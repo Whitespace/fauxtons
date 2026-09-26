@@ -1,5 +1,5 @@
 // Scene state carried in the URL fragment, e.g.
-// #az=25.00&el=16.00&d=13.000&t=0.000,1.600,0.000&fov=40.0&spot=1&veil=1&bounds=0&opaque=0&opaque2=0&cull=0&n=64&scene=spot&spread=2
+// #az=25.00&el=16.00&d=13.000&t=0.000,1.600,0.000&fov=40.0&spot=1&veil=1&bounds=0&opaque=0&opaque2=0&cull=0&sight=0&n=64&scene=spot&spread=2
 // Angles are in degrees, n is the number of lamps, scene is spot or orb, and spread is how far light
 // spreads in the shell, in millimetres. Anything missing keeps its current value.
 
@@ -19,6 +19,7 @@ export function encodeView(camera, options) {
     opaque: options.opaque ? '1' : '0',
     opaque2: options.opaque2 ? '1' : '0',
     cull: options.cull ? '1' : '0',
+    sight: options.sight ? '1' : '0',
     n: String(options.count),
     scene: options.scene,
     spread: String(options.spread),
@@ -50,6 +51,7 @@ export function decodeView(hash) {
       opaque: flag('opaque'),
       opaque2: flag('opaque2'),
       cull: flag('cull'),
+      sight: flag('sight'),
       count: number('n'),
       scene: params.get('scene') ?? undefined,
       spread: number('spread'),

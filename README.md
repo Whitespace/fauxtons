@@ -102,6 +102,28 @@ well founded, which has three consequences:
 A discrete approximation keeps the first two properties only if every decision it makes at
 field-distance `d` depends on nothing decided at a larger field-distance.
 
+## Solving from sight
+
+The page solves the cells one of two ways, over the same maps of each lamp's rays (`src/solver.js`).
+
+- **The sweep** decides every point in increasing field-distance, as above. Then each ray is followed
+  exactly against the other lamps' light twice, to catch thin layers of light the sweep stepped over.
+- **Solve from sight** starts with every lamp's light reaching as far as nothing solid is in its way.
+  Each ray is then followed exactly against the other lamps' light as the last pass left it, and cut
+  where it runs into stronger light, pass after pass. After the first pass, each lamp's light reaches
+  where it is the brightest lamp in sight all the way from the lamp; later passes let light into the
+  shadows of light that was itself cut short.
+
+The brightest lamp in sight is not the model on its own, as both cases above show: it would light the
+dark space behind each of two facing lamps, and give the shadow behind B's ball to A. On the saved
+64-lamp layout it gets about 3% of Spot's walls wrong, lighting them where no light gets or giving them
+to a lamp whose light was stopped on the way (`fauxton.checkSight()`). The passes settle on the
+model's solution all the same, because each cut depends only on light at smaller field-distances; they
+revisit points rather than deciding each once. A few hundred of the millions of rays never settle,
+whichever way the solve starts: most reach Spot's wall in one pass and stop a few millimetres short of it
+in the next. The solve ends once only those are left. It gives the same cells as the sweep, and takes
+half as long in Spot and an eighth as long in the orb.
+
 ## What is visible
 
 - At most one lamp's light is present at a point, except on an isolux veil, where neither field is
