@@ -34,6 +34,34 @@ import { P_MIN, beamProfile } from '../scene.js';
 
 export const SIZE = 256;
 
+// A lamp in cell (x, y) aimed at the point `aim` cells from its middle, rounded to hundredths of a cell so
+// that a link to the page gives it back exactly, with the power that makes its field on its axis there 1.
+export function aimedLamp(x, y, aim, color) {
+  const [dx, dy] = aim.map((v) => Math.round(v * 100) / 100);
+  const reach = Math.hypot(dx, dy);
+  return { x, y, aim: [dx, dy], axis: [dx / reach, dy / reach], power: reach * reach, reach, color };
+}
+
+// The lamps of a link to 2d.html, as its `lamps` parameter lists them: x,y,aimX,aimY,colour for each, with
+// `;` between them. Lamps that don't fit the grid, or share a cell, are left out.
+export function lampsOfLink(text) {
+  const lamps = [];
+  const taken = new Set();
+  for (const item of text.split(';')) {
+    const [x, y, dx, dy, color] = item.split(',');
+    const cell = [Number(x), Number(y)];
+    const aim = [Number(dx), Number(dy)];
+    if (!cell.every((v) => Number.isInteger(v) && v >= 0 && v < SIZE) || !aim.every(Number.isFinite)) continue;
+    if (taken.has(cell[1] * SIZE + cell[0])) continue;
+    const rgb = /^[0-9a-f]{6}$/i.test(color ?? '') ? [0, 2, 4].map((k) => parseInt(color.slice(k, k + 2), 16)) : null;
+    const lamp = aimedLamp(...cell, aim, rgb);
+    if (lamp.reach <= 0.5) continue;
+    taken.add(cell[1] * SIZE + cell[0]);
+    lamps.push(lamp);
+  }
+  return lamps;
+}
+
 export class Grid {
   constructor(size = SIZE) {
     this.size = size;
@@ -134,15 +162,16 @@ export class Grid {
   }
 
   // One tick of fill and kill: a generation of kill creatures if any are alive, else of fill creatures.
-  // Returns how many cells the tick changed.
-  life() {
+  // Returns how many cells the tick changed, or with `tally` false, for timing without the page's
+  // bookkeeping, nothing.
+  life(tally = true) {
     const { size, fields, lampAt, losses, start } = this;
     const count = this.lamps.length;
     const cells = size * size;
     if (!this.creatures) this.hatch();
     const creatures = this.creatures;
     const owner = this.owner;
-    start.set(owner);
+    if (tally) start.set(owner);
     const killing = this.alive.kill > 0;
     const moving = killing ? creatures.kill : creatures.fill;
     if (killing) creatures.kill = this.lamps.map(() => []);
@@ -177,10 +206,11 @@ export class Grid {
         });
       }
     }
-    let changed = 0;
-    for (let c = 0; c < cells; c++) if (owner[c] !== start[c]) changed++;
     this.alive = { fill: creatures.fill.reduce((n, list) => n + list.length, 0), kill: creatures.kill.reduce((n, list) => n + list.length, 0) };
     this.tick++;
+    if (!tally) return null;
+    let changed = 0;
+    for (let c = 0; c < cells; c++) if (owner[c] !== start[c]) changed++;
     return changed;
   }
 

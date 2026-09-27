@@ -249,6 +249,10 @@ The status counts the work done as comparisons, the same way for every algorithm
 looks at a cell of the grid, to decide the cell in a lamp's turn or a creature's move, to look at one of
 the eight cells around it, or to follow a line of sight through it.
 
+`src/grid2d/bench.js` times fill and kill without drawing, on the CPU and on the GPU (`gpu.js`, where the
+creatures are bits in textures and every generation is a few passes over the whole grid), for the lamps of
+a link to the page.
+
 ## The orb
 
 The orb scene is a sculpture that has been built, to compare the model with: a sphere 250 mm across,

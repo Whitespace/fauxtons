@@ -3,11 +3,13 @@
 // has cells blinking.
 
 import { CUTOFF_ANGLE } from '../scene.js';
-import { Grid, SIZE } from './sim.js';
+import { Grid, SIZE, aimedLamp, lampsOfLink } from './sim.js';
 
 const EMPTY = [30, 30, 34];
 const LINES = 'rgb(0 0 0 / 0.5)';
-const SPEEDS = [2, 5, 10, 30, 60];
+const SPEEDS = [2, 5, 10, 30, 60, 120, 300, 600];
+// The most of each frame, in milliseconds, that a run spends ticking, so that it still draws.
+const FRAME_BUDGET = 25;
 // With Show changed, how long the changed cells stay white and then their own colour, in milliseconds.
 const BLINK = 400;
 
@@ -218,15 +220,20 @@ function listLost() {
     : '';
 }
 
-// One tick of the chosen algorithm. The pass has settled once a tick changes nothing, for JFA with its step
-// halving at a step of 1, and for fill and kill once no creature is left alive.
-function tick() {
+// One tick of the chosen algorithm, without drawing it. The pass has settled once a tick changes nothing, for
+// JFA with its step halving at a step of 1, and for fill and kill once no creature is left alive.
+function advance() {
   const halving = control('halve').checked;
   const used = step;
   const changed = jfa() ? grid.jump(used) : life() ? grid.life() : grid.flood();
   if (jfa() && halving) step = Math.max(1, Math.floor(step / 2));
-  control('step').value = step;
   settled = life() ? grid.alive.fill + grid.alive.kill === 0 : changed === 0 && (!jfa() || !halving || used === 1);
+}
+
+// Draws the grid as the last tick left it, with the cells that tick changed, or once an additional pass has
+// settled, the cells it changed from the pass before.
+function show() {
+  control('step').value = step;
   const before = settled && grid.sightFrom ? grid.sightFrom : grid.start;
   changedNow = [];
   grid.owner.forEach((v, c) => v !== before[c] && changedNow.push(c));
@@ -234,6 +241,11 @@ function tick() {
   blink();
   draw();
   report();
+}
+
+function tick() {
+  advance();
+  show();
 }
 
 // With Show changed on and cells to show, the changed cells blink; otherwise nothing is drawn for it.
@@ -251,23 +263,35 @@ function blink() {
   }
 }
 
+// Ticks at the chosen speed until the pass settles: each time the display shows a frame, as many ticks as are
+// due, then one drawing. Ticks that take longer than the speed allows run as fast as they can, for up to
+// FRAME_BUDGET milliseconds a frame, and the ones that couldn't be fitted in are dropped rather than owed.
 function run() {
   if (timer !== null || settled) return;
   action('run').textContent = 'Pause';
   action('run').setAttribute('aria-pressed', 'true');
-  const next = () => {
-    tick();
-    if (settled) {
-      stop();
-      return;
+  let last = performance.now();
+  let owed = 1;
+  const frame = (now) => {
+    owed += ((now - last) * Number(control('speed').value)) / 1000;
+    last = now;
+    const until = performance.now() + FRAME_BUDGET;
+    let ran = 0;
+    while (owed >= 1 && !settled && performance.now() < until) {
+      advance();
+      owed--;
+      ran++;
     }
-    timer = setTimeout(next, 1000 / Number(control('speed').value));
+    owed = Math.min(owed, 1);
+    if (ran) show();
+    if (settled) stop();
+    else timer = requestAnimationFrame(frame);
   };
-  next();
+  timer = requestAnimationFrame(frame);
 }
 
 function stop() {
-  clearTimeout(timer);
+  cancelAnimationFrame(timer);
   timer = null;
   action('run').textContent = 'Run';
   action('run').setAttribute('aria-pressed', 'false');
@@ -304,14 +328,6 @@ canvas.addEventListener('pointerleave', () => {
   pointer = null;
   if (pending) draw();
 });
-// A lamp in cell (x, y) aimed at the point `aim` cells from its middle, rounded to hundredths of a cell so
-// that a link to the page gives it back exactly, with the power that makes its field on its axis there 1.
-function aimedLamp(x, y, aim, color) {
-  const [dx, dy] = aim.map((v) => Math.round(v * 100) / 100);
-  const reach = Math.hypot(dx, dy);
-  return { x, y, aim: [dx, dy], axis: [dx / reach, dy / reach], power: reach * reach, reach, color };
-}
-
 // The first click places a lamp in a free cell; the second aims it at the point clicked, so the further the
 // click, the brighter the lamp.
 canvas.addEventListener('click', (event) => {
@@ -408,16 +424,7 @@ function applyHash(hash) {
   if (SPEEDS.includes(Number(params.get('fps')))) control('speed').value = params.get('fps');
   if (params.has('lamps')) {
     grid.clearLamps();
-    for (const text of params.get('lamps').split(';')) {
-      const [x, y, dx, dy, color] = text.split(',');
-      const cell = [Number(x), Number(y)];
-      const aim = [Number(dx), Number(dy)];
-      if (!cell.every((v) => Number.isInteger(v) && v >= 0 && v < SIZE) || !aim.every(Number.isFinite)) continue;
-      if (grid.lampAt[cell[1] * SIZE + cell[0]] >= 0) continue;
-      const rgb = /^[0-9a-f]{6}$/i.test(color ?? '') ? [0, 2, 4].map((k) => parseInt(color.slice(k, k + 2), 16)) : randomColor();
-      const lamp = aimedLamp(...cell, aim, rgb);
-      if (lamp.reach > 0.5) grid.addLamp(lamp);
-    }
+    for (const lamp of lampsOfLink(params.get('lamps'))) grid.addLamp({ ...lamp, color: lamp.color ?? randomColor() });
   }
   reset();
   fit();
