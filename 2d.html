@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fauxtons in 2D</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      background: #060607;
+      font: 500 12px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      color: rgb(255 255 255 / 0.7);
+    }
+
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .bar [hidden] {
+      display: none;
+    }
+
+    .bar button,
+    .bar select,
+    .bar label,
+    .bar input[type="number"] {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 11px;
+      font: inherit;
+      color: rgb(255 255 255 / 0.75);
+      background: rgb(18 18 22 / 0.8);
+      border: 1px solid rgb(255 255 255 / 0.1);
+      border-radius: 999px;
+    }
+
+    .bar button,
+    .bar select {
+      cursor: pointer;
+    }
+
+    .bar button:hover,
+    .bar select:hover {
+      border-color: rgb(255 255 255 / 0.25);
+    }
+
+    .bar button[aria-pressed="true"] {
+      color: white;
+      border-color: rgb(255 255 255 / 0.4);
+    }
+
+    .bar button:disabled {
+      color: rgb(255 255 255 / 0.3);
+      cursor: default;
+    }
+
+    .bar select {
+      appearance: none;
+    }
+
+    .bar select option {
+      color: initial;
+    }
+
+    .bar input[type="number"] {
+      width: 3.5em;
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+
+    .bar input[type="checkbox"] {
+      margin: 0;
+    }
+
+    .hint,
+    .status,
+    .lost {
+      margin: 0;
+      font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-variant-numeric: tabular-nums;
+      color: rgb(255 255 255 / 0.6);
+    }
+
+    .lost {
+      max-width: 90vw;
+      text-align: center;
+    }
+
+    .lost .pair {
+      margin-left: 12px;
+      white-space: nowrap;
+    }
+
+    .lost .swatch {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      vertical-align: -1px;
+      border: 1px solid rgb(255 255 255 / 0.5);
+    }
+
+    canvas {
+      display: block;
+      cursor: crosshair;
+      user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <select data-control="algorithm" aria-label="Algorithm">
+      <option value="flood">Flood fill</option>
+      <option value="jfa">JFA</option>
+      <option value="life">Fill and kill</option>
+    </select>
+    <label class="jfa" hidden>Step <input type="number" data-control="step" min="1" max="256" value="128"></label>
+    <label class="jfa" hidden><input type="checkbox" data-control="halve" checked> Halve each tick</label>
+    <button type="button" data-action="tick">Tick</button>
+    <button type="button" data-action="run" aria-pressed="false">Run</button>
+    <button type="button" data-action="pass" disabled>Additional pass</button>
+    <select data-control="speed" aria-label="Ticks per second when running"></select>
+    <button type="button" data-action="reset">Reset</button>
+    <button type="button" data-action="clear">Clear lamps</button>
+    <button type="button" data-action="copy">Copy URL</button>
+    <label><input type="checkbox" data-control="shade" checked> Shade by brightness</label>
+    <label><input type="checkbox" data-control="changed"> Show changed</label>
+  </div>
+  <p class="hint"></p>
+  <canvas></canvas>
+  <output class="status"></output>
+  <p class="lost"></p>
+  <script type="module" src="src/grid2d/main.js"></script>
+</body>
+</html>

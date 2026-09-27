@@ -217,6 +217,38 @@ there, the one lighting it, whichever way its lamp points: everything behind is 
 shows where no patch is in view. It applies to whatever is drawn: the light in the air, the veils and
 the boundaries.
 
+## The 2D grid
+
+`2d.html` spreads the light of lamps on a grid of 256 × 256 cells, a tick at a time, to compare ways of
+doing it, with the beam and field above. Click a cell to place a lamp, then click where it should face:
+the further from the lamp, the brighter it is, as its field on its axis is 1 there. Tick runs one tick,
+Run ticks until nothing changes, and Reset goes back to no light (`src/grid2d/`). Copy URL copies a link
+with the lamps and settings, and opening it gives them back, with no light yet.
+
+- **Flood fill:** each tick, the lamps take turns, the most powerful first. In its turn a lamp's light
+  spreads into each cell next to it that the lamp can see in a straight line and that is unlit or lit by
+  a lamp weaker there, as the lamps before it left the grid. A cell on the line lit by a lamp at least as
+  strong there blocks the sight. A cell keeps its light until a stronger lamp takes it.
+- **JFA:** the same, but a lamp's light spreads into the cells a step away from it along the rows,
+  columns and diagonals rather than next to it, so with a step of 1 it is the flood fill. The step halves
+  each tick unless told not to.
+- **Fill and kill:** the flood fill's rule, carried by creatures only to where something may change. A fill
+  creature tries to light its cell for its lamp; when it does, fill creatures hatch on the cell's
+  neighbours, and kill creatures on neighbours further on whose lamps the cell now cuts off. A kill creature
+  puts out its cell if its lamp can no longer see it, spreads to the cells that lamp lights around it, and
+  leaves fill creatures for the lamps around to light the cell again. Kill creatures move while any are
+  alive; then fill creatures move, the most powerful lamp's first. A tick moves one generation.
+
+Once a pass settles, **Additional pass** runs the chosen algorithm again from no light, judging the line
+of sight against the grid as the last pass left it, and then says how many cells it changed, if any.
+**Show changed** makes those cells blink, or while a pass runs, the cells its last tick changed. Under
+the grid, the page lists for each lamp and each other lamp that took cells from it in the pass the
+brightest of those cells, as the first lamp's field there.
+
+The status counts the work done as comparisons, the same way for every algorithm: one each time a pass
+looks at a cell of the grid, to decide the cell in a lamp's turn or a creature's move, to look at one of
+the eight cells around it, or to follow a line of sight through it.
+
 ## The orb
 
 The orb scene is a sculpture that has been built, to compare the model with: a sphere 250 mm across,
