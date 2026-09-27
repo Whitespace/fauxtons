@@ -1,4 +1,4 @@
-// Fauxton light on a square grid of cells (2d.html), spread a tick at a time by one of two algorithms.
+// Fauxton light on a square grid of cells (2d.html), spread a tick at a time by one of four algorithms.
 // The beam and the field are the README's, F = P p² / r², with distances in cells, measured between the
 // middles of cells. A cell is lit by at most one lamp, its owner.
 //
@@ -18,10 +18,17 @@
 //   that lamp hatch on the neighbours it lights, and fill creatures on the cell for the lamps lighting the
 //   other neighbours, to light it again. While any kill creature is alive, only kill creatures move; fill
 //   creatures move once all have died, those of the most powerful lamp first. A tick moves one generation.
+// - Shells: the order the README's model decides light in. A lamp's light moves straight out from it, along
+//   each ray at its own speed, √P p cells per unit of field-distance, so it reaches each cell at the lamp's
+//   field-distance there, 1 / √F. Each tick moves every lamp's light out by the same step of field-distance,
+//   one shell, and decides the cells the light reaches in that step in order of field-distance, whichever
+//   lamps they are for. A cell goes to the first lamp to reach it that can see it and keeps it, as any lamp
+//   reaching it later is weaker there, so nothing is taken back. So each cell waits only for its brightest
+//   lamp, and for the next brightest only if that one can't see it.
 //
 // In a lamp's turn of the first two, every cell is decided from the grid as the turn found it; creatures
-// act on the grid as the creatures before them left it. All three note for every lamp A and every other lamp
-// B the brightest cell B took from A: A's field there, when A had it.
+// and shells act on the grid as the moves before them left it. All note for every lamp A and every other
+// lamp B the brightest cell B took from A: A's field there, when A had it. Shells never takes a cell.
 //
 // An additional pass runs either again from no light, but judges the line of sight against the grid as the
 // last pass left it (`sightFrom`) rather than as this pass goes.
@@ -31,13 +38,120 @@
 //
 // `work` counts the comparisons a pass makes, one for each time it looks at a cell of the grid: deciding a
 // cell in a lamp's turn or a creature's move, looking at one of the eight cells around it, and following a
-// line of sight, one for each cell on the line it looks at and one for each block it looks up.
+// line of sight, one for each cell on the line it looks at and one for each block it looks up. Shells also
+// counts one for each cell it takes in turn, one for each lamp it looks at to find a cell's next brightest,
+// RADIX_LOOKS for each cell it sorts, and one for each comparison in its heap of cells waiting.
 
 import { P_MIN, beamProfile } from '../scene.js';
 
 export const SIZE = 256;
 const BLOCK_BITS = 5;
 const BLOCK = 1 << BLOCK_BITS;
+
+// How fast a lamp's light moves along the ray at cos θ off its axis, in cells per unit of field-distance:
+// √P p, which on the axis is the length of the lamp's arrow. 0 where the beam is cut off.
+export function lightSpeed(lamp, cos) {
+  const p = beamProfile(cos);
+  return p >= P_MIN ? lamp.reach * p : 0;
+}
+
+// A radix sort takes RADIX_BITS of each key at a time, lowest first, in RADIX_PASSES passes, and looks at
+// each key RADIX_LOOKS times: once to count its digits, then once a pass to move it.
+const RADIX_BITS = 11;
+const RADIX_PASSES = Math.ceil(32 / RADIX_BITS);
+const RADIX_LOOKS = 1 + RADIX_PASSES;
+
+// Sorts 32-bit `keys`, with `values` alongside, by their digits of RADIX_BITS bits, lowest first. Each pass
+// is stable, so equal keys keep their order. Returns the sorted keys and values, in new arrays or the ones
+// given.
+function radixSort(keys, values) {
+  const n = keys.length;
+  const digits = 1 << RADIX_BITS;
+  const mask = digits - 1;
+  const counts = new Uint32Array(RADIX_PASSES * digits);
+  for (let k = 0; k < n; k++) {
+    const key = keys[k];
+    for (let pass = 0; pass < RADIX_PASSES; pass++) counts[pass * digits + ((key >>> (pass * RADIX_BITS)) & mask)]++;
+  }
+  let [fromKeys, fromValues, toKeys, toValues] = [keys, values, new Uint32Array(n), new Uint32Array(n)];
+  for (let pass = 0; pass < RADIX_PASSES; pass++) {
+    // Where each digit's keys go: after those of all the smaller digits.
+    const from = pass * digits;
+    for (let d = 0, start = 0; d < digits; d++) {
+      const count = counts[from + d];
+      counts[from + d] = start;
+      start += count;
+    }
+    const shift = pass * RADIX_BITS;
+    for (let k = 0; k < n; k++) {
+      const key = fromKeys[k];
+      const at = counts[from + ((key >>> shift) & mask)]++;
+      toKeys[at] = key;
+      toValues[at] = fromValues[k];
+    }
+    [fromKeys, fromValues, toKeys, toValues] = [toKeys, toValues, fromKeys, fromValues];
+  }
+  return [fromKeys, fromValues];
+}
+
+// Cells waiting for their next light, for shells: a binary heap of field-distances, as 32-bit floats, with
+// lamps and cells as lamp × cells + cell. The least field-distance is at the top, and of those as far off,
+// the lamp and cell that come first. Counts its comparisons in the grid's work.
+class Arrivals {
+  constructor(grid) {
+    this.grid = grid;
+    this.size = 0;
+    this.distance = new Float32Array(1024);
+    this.pair = new Uint32Array(1024);
+  }
+
+  push(d, p) {
+    if (this.size === this.pair.length) {
+      const distance = new Float32Array(2 * this.size);
+      const pair = new Uint32Array(2 * this.size);
+      distance.set(this.distance);
+      pair.set(this.pair);
+      Object.assign(this, { distance, pair });
+    }
+    const { distance, pair, grid } = this;
+    // Up from the bottom, moving each entry that should come after it down a level.
+    let k = this.size++;
+    while (k > 0) {
+      const parent = (k - 1) >> 1;
+      grid.work++;
+      if (!(d < distance[parent] || (d === distance[parent] && p < pair[parent]))) break;
+      distance[k] = distance[parent];
+      pair[k] = pair[parent];
+      k = parent;
+    }
+    distance[k] = d;
+    pair[k] = p;
+  }
+
+  // Takes away the entry at the top, distance[0] and pair[0].
+  pop() {
+    const { distance, pair, grid } = this;
+    const n = --this.size;
+    const d = distance[n];
+    const p = pair[n];
+    // The last entry, down from the top, moving each entry that should come before it up a level.
+    let k = 0;
+    while (2 * k + 1 < n) {
+      let child = 2 * k + 1;
+      if (child + 1 < n) {
+        grid.work++;
+        if (distance[child + 1] < distance[child] || (distance[child + 1] === distance[child] && pair[child + 1] < pair[child])) child++;
+      }
+      grid.work++;
+      if (!(distance[child] < d || (distance[child] === d && pair[child] < p))) break;
+      distance[k] = distance[child];
+      pair[k] = pair[child];
+      k = child;
+    }
+    distance[k] = d;
+    pair[k] = p;
+  }
+}
 
 // How many of the edges a line crosses at (2k + 1) / 2m of its way, for k = 0, 1, …, come before the edge it
 // crosses at odd / 2n of its way: those with (2k + 1) n < odd m.
@@ -92,6 +206,8 @@ export class Grid {
     this.sightFrom = null;
     // Whether lines of sight pass over blocks that no other lamp lights.
     this.skipBlocks = true;
+    // How far, in cells, the most powerful lamp's light moves along its axis in a tick of shells.
+    this.shellCells = 2;
     // Per block, how many of its cells are lit in the grid lines of sight are judged against, and per lamp
     // and block, how many the lamp lights (`blockOwn`, made by reset()). `changes` holds the cells a lamp's
     // turn of the flood fill or JFA changed.
@@ -146,6 +262,14 @@ export class Grid {
     // Fill and kill's creatures, hatched on its first tick, and how many of each kind are alive.
     this.creatures = null;
     this.alive = { fill: 0, kill: 0 };
+    // Shells' cells in order of their first light, made on its first tick, and the next to take; the cells
+    // waiting for a later light; how many cells are left waiting; and the field-distance its light has
+    // reached.
+    this.first = null;
+    this.cursor = 0;
+    this.later = null;
+    this.shellsLeft = null;
+    this.clock = 0;
     this.countBlocks();
   }
 
@@ -273,6 +397,117 @@ export class Grid {
     let changed = 0;
     for (let c = 0; c < cells; c++) if (owner[c] !== start[c]) changed++;
     return changed;
+  }
+
+  // One tick of shells: every lamp's light moves out by the same step of field-distance, and each cell whose
+  // next light arrives in that step, in order of field-distance, goes to that light's lamp if the lamp can
+  // see it. If it can't, the cell waits for the next brightest lamp there, in `later`. Steps that light
+  // nothing are passed over, so each tick lights something until no cell is left waiting. Returns how many
+  // cells the tick lit, keeping the grid as it was in `start` unless `tally` is false.
+  shells(tally = true) {
+    if (!this.first) this.scheduleCells();
+    const { size, owner, first, later } = this;
+    const cells = size * size;
+    const step = this.shellCells / Math.max(...this.lamps.map((lamp) => lamp.reach));
+    if (tally) this.start.set(owner);
+    // Whether the next cell comes from `first` rather than `later`: the one with less field-distance, or
+    // as far, the lamp and cell that come first by lamp × cells + cell.
+    const fromFirst = () =>
+      this.cursor < first.pair.length &&
+      (!later.size || first.distance[this.cursor] < later.distance[0] || (first.distance[this.cursor] === later.distance[0] && first.pair[this.cursor] < later.pair[0]));
+    let lit = 0;
+    while (lit === 0 && this.shellsLeft > 0) {
+      const next = fromFirst() ? first.distance[this.cursor] : later.distance[0];
+      this.clock = Math.max(this.clock + step, Math.ceil(next / step) * step);
+      for (;;) {
+        let distance;
+        let pair;
+        if (fromFirst()) {
+          distance = first.distance[this.cursor];
+          pair = first.pair[this.cursor];
+          if (distance > this.clock) break;
+          this.cursor++;
+        } else {
+          if (!later.size || later.distance[0] > this.clock) break;
+          distance = later.distance[0];
+          pair = later.pair[0];
+          later.pop();
+        }
+        const i = Math.floor(pair / cells);
+        const c = pair - i * cells;
+        const x = c % size;
+        this.work++;
+        if (this.inSight(i, x, (c - x) / size)) {
+          owner[c] = i;
+          this.recount(c, -1, i);
+          lit++;
+        } else {
+          const j = this.nextLamp(c, i, distance);
+          if (j >= 0) later.push(this.nextDistance, j * cells + c);
+        }
+      }
+      this.shellsLeft = first.pair.length - this.cursor + later.size;
+    }
+    this.tick++;
+    return lit;
+  }
+
+  // For shells, every cell some lamp's light could reach but the lamps' own, in order of when the first
+  // light gets there: the field-distance of the lamp brightest there, and that lamp and the cell as
+  // lamp × cells + cell. Cells as far off come by lamp and then cell.
+  scheduleCells() {
+    const { size, lampAt, lamps } = this;
+    const cells = size * size;
+    const lampOf = new Int16Array(cells).fill(-1);
+    const distanceOf = new Float32Array(cells);
+    const starts = new Uint32Array(lamps.length + 1);
+    for (let c = 0; c < cells; c++) {
+      if (lampAt[c] >= 0) continue;
+      const i = this.nextLamp(c, -1, -Infinity);
+      if (i < 0) continue;
+      lampOf[c] = i;
+      distanceOf[c] = this.nextDistance;
+      starts[i + 1]++;
+    }
+    // Lamp by lamp and cell by cell, then sorted by the field-distances' bits as 32-bit floats, which order
+    // as the numbers do when positive; the sort keeps the order of cells as far off.
+    for (let i = 0; i < lamps.length; i++) starts[i + 1] += starts[i];
+    const count = starts[lamps.length];
+    const distance = new Float32Array(count);
+    const pair = new Uint32Array(count);
+    for (let c = 0; c < cells; c++) {
+      const i = lampOf[c];
+      if (i < 0) continue;
+      const at = starts[i]++;
+      distance[at] = distanceOf[c];
+      pair[at] = i * cells + c;
+    }
+    const [keys, pairs] = radixSort(new Uint32Array(distance.buffer), pair);
+    this.work += RADIX_LOOKS * count;
+    this.first = { distance: new Float32Array(keys.buffer), pair: pairs };
+    this.later = new Arrivals(this);
+    this.shellsLeft = count;
+  }
+
+  // The lamp whose light reaches cell c next after lamp `after`'s, whose field-distance there is `than`:
+  // the next brightest there, with the least field-distance above it, or as far off with a higher index.
+  // -1 if there is none. Its field-distance, as a 32-bit float, is left in `nextDistance`. Counts one
+  // comparison for each lamp looked at.
+  nextLamp(c, after, than) {
+    const { fields } = this;
+    let next = -1;
+    let nextDistance = Infinity;
+    for (let j = 0; j < fields.length; j++) {
+      const field = fields[j][c];
+      if (!(field > 0)) continue;
+      const distance = Math.fround(1 / Math.sqrt(field));
+      if (distance < than || (distance === than && j <= after) || distance >= nextDistance) continue;
+      next = j;
+      nextDistance = distance;
+    }
+    this.work += fields.length;
+    this.nextDistance = nextDistance;
+    return next;
   }
 
   // Fill creatures for every lamp on the cells around it, and room for the creatures to come: per lamp, the

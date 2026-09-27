@@ -238,6 +238,22 @@ with the lamps and settings, and opening it gives them back, with no light yet.
   puts out its cell if its lamp can no longer see it, spreads to the cells that lamp lights around it, and
   leaves fill creatures for the lamps around to light the cell again. Kill creatures move while any are
   alive; then fill creatures move, the most powerful lamp's first. A tick moves one generation.
+- **Shells:** the order the model decides light in. A lamp's light moves straight out from it, along each
+  ray at its own speed: the length of the lamp's arrow along its axis, less off it, down to about 15% at
+  the cutoff. So it reaches a cell at the lamp's field-distance there. Each tick moves every lamp's light
+  out by the same step of field-distance, one shell, and decides the cells the light reaches in that step
+  in order of field-distance, whichever lamps they are for. A cell goes to the first lamp to reach it that
+  can see it and keeps it, as any lamp reaching it later is weaker there, so nothing is taken back. So a
+  cell waits only for its brightest lamp's light, and for the next brightest only if that one can't see
+  it.
+  **Shell step** is how far the most powerful lamp's light moves along its axis in a tick; steps that
+  light nothing are passed over.
+
+With shells, arrows 16 cells apart show how fast the light moves at each point, longer by the square root
+of the speed. They are white for the light that lit the point, and in a lamp's colour for the light that
+would reach it first if nothing stopped it, before it has. Each lamp's shell is drawn where its light has
+got to: white where it is still moving out, and dashed in its colour past where something stopped it.
+While a lamp is being aimed, the arrows are its own light's.
 
 Once a pass settles, **Additional pass** runs the chosen algorithm again from no light, judging the line
 of sight against the grid as the last pass left it, and then says how many cells it changed, if any.
@@ -253,7 +269,9 @@ changes.
 The status counts the work done as comparisons, the same way for every algorithm: one each time a pass
 looks at a cell of the grid, to decide the cell in a lamp's turn or a creature's move, to look at one of
 the eight cells around it, or to follow a line of sight through it, and one for each block a line of
-sight looks up.
+sight looks up. Shells also counts one for each cell it takes in turn, one for each lamp it looks at to
+find a cell's next brightest, four for each cell it sorts, as its radix sort looks at each once to count
+and three times to move it, and one for each comparison in its heap of cells waiting in shadow.
 
 `src/grid2d/bench.js` times fill and kill without drawing, on the CPU and on the GPU (`gpu.js`, where the
 creatures are bits in textures and every generation is a few passes over the whole grid), for the lamps of

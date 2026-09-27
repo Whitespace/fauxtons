@@ -1,13 +1,18 @@
 // The 2D grid page (2d.html): place lamps by clicking, then spread their light a tick at a time by the flood
-// fill, JFA, or fill and kill (sim.js). The page draws only when something changes, or while Show changed
-// has cells blinking.
+// fill, JFA, fill and kill, or shells (sim.js). The page draws only when something changes, or while Show
+// changed has cells blinking.
 
 import { CUTOFF_ANGLE } from '../scene.js';
-import { Grid, SIZE, aimedLamp, lampsOfLink } from './sim.js';
+import { Grid, SIZE, aimedLamp, lampsOfLink, lightSpeed } from './sim.js';
 
 const EMPTY = [30, 30, 34];
 const LINES = 'rgb(0 0 0 / 0.5)';
 const SPEEDS = [2, 5, 10, 30, 60, 120, 300, 600];
+// With shells, the light's speed is drawn as arrows this many cells apart, a speed of ARROW_SPEED cells per
+// unit of field-distance or more as long as nine tenths of that, and slower ones shorter by the square root
+// of the speed, so that dim lamps' arrows still show beside bright ones.
+const FIELD_SPACING = 16;
+const ARROW_SPEED = 256;
 // The most of each frame, in milliseconds, that a run spends ticking, so that it still draws.
 const FRAME_BUDGET = 25;
 // With Show changed, how long the changed cells stay white and then their own colour, in milliseconds.
@@ -55,6 +60,7 @@ let scale = 3;
 
 const jfa = () => control('algorithm').value === 'jfa';
 const life = () => control('algorithm').value === 'life';
+const shells = () => control('algorithm').value === 'shells';
 
 function randomColor() {
   const hue = Math.random() * 360;
@@ -113,23 +119,122 @@ function draw() {
     }
   }
 
-  // Each lamp's cell outlined, and an arrow along its axis as long as the click that aimed it was far.
+  // The lamp being aimed, as it would be if the click were here.
+  let aiming = null;
+  if (pending && pointer) {
+    const lamp = aimedLamp(pending.x, pending.y, [pointer[0] - (pending.x + 0.5), pointer[1] - (pending.y + 0.5)], pending.color);
+    if (lamp.reach > 0.5) aiming = lamp;
+  }
+
+  // With shells, the light's speed, and each lamp's shell; otherwise each lamp's arrow along its axis, as
+  // long as the click that aimed it was far.
+  if (shells()) {
+    speedField(aiming);
+    lamps.forEach(shell);
+  }
   for (const lamp of lamps) {
     outline(lamp.x, lamp.y);
-    arrow(lamp.x, lamp.y, lamp.axis, lamp.reach);
+    if (!shells()) arrow(lamp.x, lamp.y, lamp.axis, lamp.reach);
   }
-  if (pending) {
-    outline(pending.x, pending.y);
-    if (pointer) {
-      const dx = pointer[0] - (pending.x + 0.5);
-      const dy = pointer[1] - (pending.y + 0.5);
-      const reach = Math.hypot(dx, dy);
-      if (reach > 0.5) {
-        const axis = [dx / reach, dy / reach];
-        cone(pending.x, pending.y, axis, reach);
-        arrow(pending.x, pending.y, axis, reach);
+  if (pending) outline(pending.x, pending.y);
+  if (aiming && !shells()) {
+    cone(aiming.x, aiming.y, aiming.axis, aiming.reach);
+    arrow(aiming.x, aiming.y, aiming.axis, aiming.reach);
+  }
+}
+
+// The speed of the light at points FIELD_SPACING cells apart, as arrows pointing straight away from a lamp,
+// as long as the lamp's light is fast there. With a lamp being aimed, its own light's, in white. Otherwise
+// at each point, the light of the lamp that lit it, in white, or if none has yet, in its colour, the light
+// that would reach it first if nothing stopped it: the lamp brightest there.
+function speedField(aiming) {
+  const { lamps, owner, fields } = grid;
+  for (let y = FIELD_SPACING / 2; y < SIZE; y += FIELD_SPACING) {
+    for (let x = FIELD_SPACING / 2; x < SIZE; x += FIELD_SPACING) {
+      const c = y * SIZE + x;
+      let lamp = aiming;
+      let arrived = true;
+      if (!lamp) {
+        let i = owner[c];
+        arrived = i >= 0;
+        if (!arrived) fields.forEach((field, k) => field[c] > (i >= 0 ? fields[i][c] : 0) && (i = k));
+        if (i < 0) continue;
+        lamp = lamps[i];
       }
+      const dx = x - lamp.x;
+      const dy = y - lamp.y;
+      const r = Math.hypot(dx, dy);
+      const speed = r > 0 ? lightSpeed(lamp, (lamp.axis[0] * dx + lamp.axis[1] * dy) / r) : 0;
+      if (speed === 0) continue;
+      const length = 0.9 * FIELD_SPACING * Math.min(1, Math.sqrt(speed / ARROW_SPEED));
+      vector(x, y, [dx / r, dy / r], length, arrived ? [255, 255, 255] : lamp.color);
     }
+  }
+}
+
+// A small arrow centred on the middle of cell (x, y), along the unit vector `u`, `length` cells long.
+function vector(x, y, u, length, rgb) {
+  const [xm, ym] = middle(x, y);
+  const half = (length * scale) / 2;
+  const [x0, y0, x1, y1] = [xm - u[0] * half, ym - u[1] * half, xm + u[0] * half, ym + u[1] * half];
+  const head = Math.min(half, 1.5 * scale);
+  context.beginPath();
+  context.moveTo(x0, y0);
+  context.lineTo(x1, y1);
+  for (const side of [0.5, -0.5]) {
+    context.moveTo(x1, y1);
+    context.lineTo(x1 - head * (u[0] * Math.cos(side) - u[1] * Math.sin(side)), y1 - head * (u[1] * Math.cos(side) + u[0] * Math.sin(side)));
+  }
+  context.lineCap = 'round';
+  const width = Math.max(1, scale / 3);
+  context.lineWidth = 3 * width;
+  context.strokeStyle = 'rgb(0 0 0 / 0.55)';
+  context.stroke();
+  context.lineWidth = width;
+  context.strokeStyle = `rgb(${rgb.join(' ')})`;
+  context.stroke();
+}
+
+// Lamp i's shell: where its light has got to, at the field-distance shells has reached, for each direction
+// in its beam. White where the light is still moving out, and dashed in its colour past where something
+// stopped it.
+function shell(lamp, i) {
+  const { clock, owner } = grid;
+  if (clock <= 0) return;
+  const cut = (CUTOFF_ANGLE * Math.PI) / 180;
+  const runs = [];
+  for (let k = 0; k <= 240; k++) {
+    const angle = -cut + (2 * cut * k) / 240;
+    const speed = lightSpeed(lamp, Math.cos(angle));
+    if (speed === 0) continue;
+    const u = [lamp.axis[0] * Math.cos(angle) - lamp.axis[1] * Math.sin(angle), lamp.axis[1] * Math.cos(angle) + lamp.axis[0] * Math.sin(angle)];
+    const r = clock * speed;
+    // Moving if the lamp lights the cell just behind the shell.
+    const bx = Math.round(lamp.x + u[0] * Math.max(0, r - 1));
+    const by = Math.round(lamp.y + u[1] * Math.max(0, r - 1));
+    const moving = bx >= 0 && by >= 0 && bx < SIZE && by < SIZE && owner[by * SIZE + bx] === i;
+    const point = middle(lamp.x + u[0] * r, lamp.y + u[1] * r);
+    if (runs.at(-1)?.moving === moving) runs.at(-1).points.push(point);
+    else runs.push({ moving, points: runs.length ? [runs.at(-1).points.at(-1), point] : [point] });
+  }
+  for (const { moving, points } of runs) {
+    context.beginPath();
+    points.forEach(([px, py], k) => (k ? context.lineTo(px, py) : context.moveTo(px, py)));
+    context.lineJoin = 'round';
+    const width = Math.max(1.5, scale / 2);
+    if (moving) {
+      context.lineWidth = 2.5 * width;
+      context.strokeStyle = 'rgb(0 0 0 / 0.6)';
+      context.stroke();
+      context.lineWidth = width;
+      context.strokeStyle = 'white';
+    } else {
+      context.setLineDash([2 * scale, 2 * scale]);
+      context.lineWidth = width;
+      context.strokeStyle = `rgb(${lamp.color.join(' ')} / 0.8)`;
+    }
+    context.stroke();
+    context.setLineDash([]);
   }
 }
 
@@ -188,20 +293,21 @@ function cone(x, y, axis, reach) {
   context.setLineDash([]);
 }
 
-// The pass and tick, JFA's next step while running, once an additional pass settles what it changed, and the
-// comparisons made in this pass and, after the first, in all of them.
+// The pass and tick, JFA's next step while running, the field-distance shells has reached, once an additional
+// pass settles what it changed, and the comparisons made in this pass and, after the first, in all of them.
 const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 3 });
 function report() {
   const parts = [`pass ${pass}`, `tick ${grid.tick}`];
   if (jfa() && !settled) parts.push(`step ${step}`);
   if (life() && !settled && grid.tick > 0) parts.push(`${grid.alive.fill.toLocaleString()} fill`, `${grid.alive.kill.toLocaleString()} kill`);
+  if (shells() && grid.tick > 0) parts.push(`field-distance ${Number(grid.clock.toPrecision(3)).toLocaleString()}`);
   if (settled) parts.push(changedCells === null ? 'settled' : changedCells ? `${changedCells.toLocaleString()} changed` : 'no change');
   parts.push(`${compact.format(grid.work)} comparisons`);
   if (pass > 1) parts.push(`${compact.format(earlierWork + grid.work)} in all`);
   status.textContent = parts.join(' · ');
   hint.textContent = pending
-    ? 'Click where the lamp should face: the further from the lamp, the brighter. Esc cancels.'
-    : 'Click a cell to place a lamp.';
+    ? `Click where the lamp should face: the further from the lamp, the brighter.${shells() ? ' The arrows are how fast its light moves.' : ''} Esc cancels.`
+    : `Click a cell to place a lamp.${shells() ? ' Arrows: how fast the light moves there, in colour until it arrives.' : ''}`;
   action('pass').disabled = !settled;
   listLost();
 }
@@ -221,13 +327,15 @@ function listLost() {
 }
 
 // One tick of the chosen algorithm, without drawing it. The pass has settled once a tick changes nothing, for
-// JFA with its step halving at a step of 1, and for fill and kill once no creature is left alive.
+// JFA with its step halving at a step of 1, for fill and kill once no creature is left alive, and for shells
+// once no lamp and cell are left.
 function advance() {
   const halving = control('halve').checked;
   const used = step;
-  const changed = jfa() ? grid.jump(used) : life() ? grid.life() : grid.flood();
+  const changed = shells() ? grid.shells() : jfa() ? grid.jump(used) : life() ? grid.life() : grid.flood();
   if (jfa() && halving) step = Math.max(1, Math.floor(step / 2));
-  settled = life() ? grid.alive.fill + grid.alive.kill === 0 : changed === 0 && (!jfa() || !halving || used === 1);
+  if (shells()) settled = grid.shellsLeft === 0;
+  else settled = life() ? grid.alive.fill + grid.alive.kill === 0 : changed === 0 && (!jfa() || !halving || used === 1);
 }
 
 // Draws the grid as the last tick left it, with the cells that tick changed, or once an additional pass has
@@ -373,9 +481,13 @@ action('clear').addEventListener('click', () => {
   grid.clearLamps();
   reset();
 });
-// JFA's own controls can wrap the bar onto another row, so the grid is fitted again.
-control('algorithm').addEventListener('change', () => {
+// JFA's and shells' own controls can wrap the bar onto another row, so the grid is fitted again.
+const showControls = () => {
   for (const element of document.querySelectorAll('.jfa')) element.hidden = !jfa();
+  for (const element of document.querySelectorAll('.shells')) element.hidden = !shells();
+};
+control('algorithm').addEventListener('change', () => {
+  showControls();
   reset();
   fit();
 });
@@ -393,6 +505,17 @@ control('step').addEventListener('change', () => {
   resume();
 });
 control('halve').addEventListener('change', resume);
+// A shell step typed in is used from the next tick.
+const useShellStep = () => {
+  const value = Number(control('shell').value);
+  grid.shellCells = Math.min(64, Math.max(0.25, Number.isFinite(value) && value > 0 ? value : 2));
+  control('shell').value = grid.shellCells;
+};
+control('shell').addEventListener('change', () => {
+  useShellStep();
+  resume();
+});
+useShellStep();
 // Skipping blocks changes only how much work a line of sight takes, so it can change mid-pass.
 const useSkip = () => (grid.skipBlocks = control('skip').checked);
 control('skip').addEventListener('change', useSkip);
@@ -405,14 +528,14 @@ control('changed').addEventListener('change', () => {
 window.addEventListener('resize', fit);
 
 // The lamps and settings as the page's address, e.g.
-// #algorithm=jfa&step=128&halve=1&skip=1&shade=1&changed=0&fps=60&lamps=64,128,71,0.43,8bea3e;206,135,-0.67,-21.9,3eddea
+// #algorithm=jfa&step=128&halve=1&shell=2&skip=1&shade=1&changed=0&fps=60&lamps=64,128,71,0.43,8bea3e;206,135,-0.67,-21.9,3eddea
 // with each lamp as its cell, where it was aimed from its middle in cells, and its colour. Opening one gives
 // back the lamps and settings, with no light yet; anything missing is left as it is.
 function stateHash() {
   const hex = (rgb) => rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
   const lamps = grid.lamps.map(({ x, y, aim, color }) => [x, y, ...aim, hex(color)].join(',')).join(';');
   const flag = (name) => (control(name).checked ? 1 : 0);
-  return `#algorithm=${control('algorithm').value}&step=${firstStep}&halve=${flag('halve')}&skip=${flag('skip')}&shade=${flag('shade')}&changed=${flag('changed')}&fps=${control('speed').value}&lamps=${lamps}`;
+  return `#algorithm=${control('algorithm').value}&step=${firstStep}&halve=${flag('halve')}&shell=${grid.shellCells}&skip=${flag('skip')}&shade=${flag('shade')}&changed=${flag('changed')}&fps=${control('speed').value}&lamps=${lamps}`;
 }
 
 function applyHash(hash) {
@@ -420,10 +543,14 @@ function applyHash(hash) {
   if (![...params.keys()].length) return;
   stop();
   pending = null;
-  if (['flood', 'jfa', 'life'].includes(params.get('algorithm'))) control('algorithm').value = params.get('algorithm');
-  for (const element of document.querySelectorAll('.jfa')) element.hidden = !jfa();
+  if (['flood', 'jfa', 'life', 'shells'].includes(params.get('algorithm'))) control('algorithm').value = params.get('algorithm');
+  showControls();
   const first = Math.round(Number(params.get('step')));
   if (first >= 1 && first <= SIZE) firstStep = first;
+  if (params.has('shell')) {
+    control('shell').value = params.get('shell');
+    useShellStep();
+  }
   for (const name of ['halve', 'skip', 'shade', 'changed']) if (params.has(name)) control(name).checked = params.get(name) !== '0';
   useSkip();
   if (SPEEDS.includes(Number(params.get('fps')))) control('speed').value = params.get('fps');

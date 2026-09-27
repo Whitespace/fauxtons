@@ -127,9 +127,11 @@
       <option value="flood">Flood fill</option>
       <option value="jfa">JFA</option>
       <option value="life">Fill and kill</option>
+      <option value="shells">Shells</option>
     </select>
     <label class="jfa" hidden>Step <input type="number" data-control="step" min="1" max="256" value="128"></label>
     <label class="jfa" hidden><input type="checkbox" data-control="halve" checked> Halve each tick</label>
+    <label class="shells" hidden title="How far the most powerful lamp's light moves along its axis in a tick">Shell step <input type="number" data-control="shell" min="0.25" max="64" step="0.25" value="2"> cells</label>
     <button type="button" data-action="tick">Tick</button>
     <button type="button" data-action="run" aria-pressed="false">Run</button>
     <button type="button" data-action="pass" disabled>Additional pass</button>
