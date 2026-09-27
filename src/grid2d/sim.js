@@ -26,13 +26,25 @@
 // An additional pass runs either again from no light, but judges the line of sight against the grid as the
 // last pass left it (`sightFrom`) rather than as this pass goes.
 //
+// A line of sight passes over blocks of BLOCK × BLOCK cells that no other lamp lights, as nothing in them
+// can block it, rather than looking at their cells one by one (`skipBlocks`).
+//
 // `work` counts the comparisons a pass makes, one for each time it looks at a cell of the grid: deciding a
 // cell in a lamp's turn or a creature's move, looking at one of the eight cells around it, and following a
-// line of sight, one for each cell on the line.
+// line of sight, one for each cell on the line it looks at and one for each block it looks up.
 
 import { P_MIN, beamProfile } from '../scene.js';
 
 export const SIZE = 256;
+const BLOCK_BITS = 5;
+const BLOCK = 1 << BLOCK_BITS;
+
+// How many of the edges a line crosses at (2k + 1) / 2m of its way, for k = 0, 1, …, come before the edge it
+// crosses at odd / 2n of its way: those with (2k + 1) n < odd m.
+function crossed(odd, m, n) {
+  const before = odd * m;
+  return before <= n ? 0 : Math.floor((before - 1 - n) / (2 * n)) + 1;
+}
 
 // A lamp in cell (x, y) aimed at the point `aim` cells from its middle, rounded to hundredths of a cell so
 // that a link to the page gives it back exactly, with the power that makes its field on its axis there 1.
@@ -75,8 +87,17 @@ export class Grid {
     this.owner = new Int16Array(cells);
     this.next = new Int16Array(cells);
     this.start = new Int16Array(cells);
-    // For an additional pass, the grid its line of sight is judged against; null for the first pass.
+    // For an additional pass, the grid its line of sight is judged against, set before reset(); null for the
+    // first pass.
     this.sightFrom = null;
+    // Whether lines of sight pass over blocks that no other lamp lights.
+    this.skipBlocks = true;
+    // Per block, how many of its cells are lit in the grid lines of sight are judged against, and per lamp
+    // and block, how many the lamp lights (`blockOwn`, made by reset()). `changes` holds the cells a lamp's
+    // turn of the flood fill or JFA changed.
+    this.blocksWide = Math.ceil(size / BLOCK);
+    this.blockLit = new Int32Array(this.blocksWide ** 2);
+    this.changes = new Int32Array(cells);
     this.reset();
   }
 
@@ -125,6 +146,41 @@ export class Grid {
     // Fill and kill's creatures, hatched on its first tick, and how many of each kind are alive.
     this.creatures = null;
     this.alive = { fill: 0, kill: 0 };
+    this.countBlocks();
+  }
+
+  // The blocks' counts of lit cells, afresh, for the grid lines of sight are judged against.
+  countBlocks() {
+    const { size, blocksWide, blockLit } = this;
+    const grid = this.sightFrom ?? this.owner;
+    const blocks = blocksWide * blocksWide;
+    blockLit.fill(0);
+    this.blockOwn = new Int32Array(this.lamps.length * blocks);
+    for (let c = 0; c < grid.length; c++) {
+      const j = grid[c];
+      if (j < 0) continue;
+      const x = c % size;
+      const b = (((c - x) / size) >> BLOCK_BITS) * blocksWide + (x >> BLOCK_BITS);
+      blockLit[b]++;
+      this.blockOwn[j * blocks + b]++;
+    }
+  }
+
+  // Cell c going from lamp `from` to lamp `to`, either -1 for none, in the blocks' counts, unless lines of
+  // sight are judged against another pass's grid.
+  recount(c, from, to) {
+    if (this.sightFrom) return;
+    const { size, blocksWide, blockLit, blockOwn } = this;
+    const x = c % size;
+    const b = (((c - x) / size) >> BLOCK_BITS) * blocksWide + (x >> BLOCK_BITS);
+    if (from >= 0) {
+      blockLit[b]--;
+      blockOwn[from * blocksWide * blocksWide + b]--;
+    }
+    if (to >= 0) {
+      blockLit[b]++;
+      blockOwn[to * blocksWide * blocksWide + b]++;
+    }
   }
 
   // One tick of the flood fill. Returns how many cells changed.
@@ -139,8 +195,9 @@ export class Grid {
     const count = this.lamps.length;
     start.set(this.owner);
     for (const i of this.order) {
-      const { owner, next } = this;
+      const { owner, next, changes } = this;
       const field = fields[i];
+      let taken = 0;
       this.work += size * size;
       for (let y = 0; y < size; y++) {
         for (let x = 0; x < size; x++) {
@@ -150,10 +207,12 @@ export class Grid {
           if (lampAt[c] >= 0 || had === i || field[c] <= (had >= 0 ? fields[had][c] : 0)) continue;
           if (!this.near(i, x, y, step) || !this.inSight(i, x, y)) continue;
           next[c] = i;
+          changes[taken++] = c;
           if (had >= 0 && fields[had][c] > losses[had * count + i]) losses[had * count + i] = fields[had][c];
         }
       }
       [this.owner, this.next] = [this.next, this.owner];
+      for (let k = 0; k < taken; k++) this.recount(changes[k], this.next[changes[k]], i);
     }
     let changed = 0;
     for (let c = 0; c < start.length; c++) if (this.owner[c] !== start[c]) changed++;
@@ -187,6 +246,7 @@ export class Grid {
         if (killing) {
           if (had !== i || this.inSight(i, x, y)) continue;
           owner[c] = -1;
+          this.recount(c, i, -1);
           this.neighbours(c, (n) => {
             const j = owner[n];
             if (j === i) this.queue('kill', i, n);
@@ -197,6 +257,7 @@ export class Grid {
         if (lampAt[c] >= 0 || had === i || field[c] <= (had >= 0 ? fields[had][c] : 0)) continue;
         if (!this.near(i, x, y, 1) || !this.inSight(i, x, y)) continue;
         owner[c] = i;
+        this.recount(c, had, i);
         if (had >= 0 && fields[had][c] > losses[had * count + i]) losses[had * count + i] = fields[had][c];
         this.neighbours(c, (n) => {
           const j = owner[n];
@@ -280,8 +341,12 @@ export class Grid {
   // additional pass, as the last pass left it: no cell the line between the two cells' middles passes
   // through, short of (x, y), is lit by another lamp whose field there is at least as strong. Where the line
   // passes exactly through a corner, both cells beside the corner count.
+  //
+  // With `skipBlocks`, the line passes over the cells it has in a block that no other lamp lights, straight
+  // to its last cell there, found from where it leaves the block: through the far column, the far row, or
+  // the far corner.
   inSight(i, x, y) {
-    const { size, fields } = this;
+    const { size, fields, skipBlocks, blocksWide, blockLit } = this;
     const owner = this.sightFrom ?? this.owner;
     const field = fields[i];
     const blocks = (cx, cy) => {
@@ -290,13 +355,45 @@ export class Grid {
       this.work++;
       return j >= 0 && j !== i && fields[j][c] >= field[c];
     };
-    let cx = this.lamps[i].x;
-    let cy = this.lamps[i].y;
+    const own = this.blockOwn;
+    const ownFrom = i * blocksWide * blocksWide;
+    const { x: lx, y: ly } = this.lamps[i];
+    let cx = lx;
+    let cy = ly;
     const nx = Math.abs(x - cx);
     const ny = Math.abs(y - cy);
     const sx = Math.sign(x - cx);
     const sy = Math.sign(y - cy);
+    // The block last looked up, and whether cell (cx, cy) is yet to be looked at.
+    let block = -1;
+    let unchecked = false;
     for (let ix = 0, iy = 0; ix < nx || iy < ny; ) {
+      if (skipBlocks) {
+        const bx = cx >> BLOCK_BITS;
+        const by = cy >> BLOCK_BITS;
+        const b = by * blocksWide + bx;
+        if (b !== block) {
+          block = b;
+          this.work++;
+          if (blockLit[b] === own[ownFrom + b]) {
+            if (x >> BLOCK_BITS === bx && y >> BLOCK_BITS === by) return true;
+            // How many columns and rows the line has from the lamp to the block's far column and row.
+            const farX = sx > 0 ? ((bx + 1) << BLOCK_BITS) - 1 - lx : lx - (bx << BLOCK_BITS);
+            const farY = sy > 0 ? ((by + 1) << BLOCK_BITS) - 1 - ly : ly - (by << BLOCK_BITS);
+            if (farX < nx && (farY >= ny || (2 * farX + 1) * ny <= (2 * farY + 1) * nx)) {
+              iy = crossed(2 * farX + 1, ny, nx);
+              ix = farX;
+            } else {
+              ix = crossed(2 * farY + 1, nx, ny);
+              iy = farY;
+            }
+            cx = lx + sx * ix;
+            cy = ly + sy * iy;
+            unchecked = false;
+          }
+        }
+      }
+      if (unchecked && blocks(cx, cy)) return false;
       // Which the line crosses next: a column's edge, a row's, or both at a corner.
       const decision = (1 + 2 * ix) * ny - (1 + 2 * iy) * nx;
       if (decision === 0) {
@@ -312,7 +409,7 @@ export class Grid {
         cy += sy;
         iy++;
       }
-      if ((cx !== x || cy !== y) && blocks(cx, cy)) return false;
+      unchecked = cx !== x || cy !== y;
     }
     return true;
   }

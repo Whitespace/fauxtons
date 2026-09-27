@@ -393,6 +393,10 @@ control('step').addEventListener('change', () => {
   resume();
 });
 control('halve').addEventListener('change', resume);
+// Skipping blocks changes only how much work a line of sight takes, so it can change mid-pass.
+const useSkip = () => (grid.skipBlocks = control('skip').checked);
+control('skip').addEventListener('change', useSkip);
+useSkip();
 control('shade').addEventListener('change', draw);
 control('changed').addEventListener('change', () => {
   blink();
@@ -401,14 +405,14 @@ control('changed').addEventListener('change', () => {
 window.addEventListener('resize', fit);
 
 // The lamps and settings as the page's address, e.g.
-// #algorithm=jfa&step=128&halve=1&shade=1&changed=0&fps=60&lamps=64,128,71,0.43,8bea3e;206,135,-0.67,-21.9,3eddea
+// #algorithm=jfa&step=128&halve=1&skip=1&shade=1&changed=0&fps=60&lamps=64,128,71,0.43,8bea3e;206,135,-0.67,-21.9,3eddea
 // with each lamp as its cell, where it was aimed from its middle in cells, and its colour. Opening one gives
 // back the lamps and settings, with no light yet; anything missing is left as it is.
 function stateHash() {
   const hex = (rgb) => rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
   const lamps = grid.lamps.map(({ x, y, aim, color }) => [x, y, ...aim, hex(color)].join(',')).join(';');
   const flag = (name) => (control(name).checked ? 1 : 0);
-  return `#algorithm=${control('algorithm').value}&step=${firstStep}&halve=${flag('halve')}&shade=${flag('shade')}&changed=${flag('changed')}&fps=${control('speed').value}&lamps=${lamps}`;
+  return `#algorithm=${control('algorithm').value}&step=${firstStep}&halve=${flag('halve')}&skip=${flag('skip')}&shade=${flag('shade')}&changed=${flag('changed')}&fps=${control('speed').value}&lamps=${lamps}`;
 }
 
 function applyHash(hash) {
@@ -420,7 +424,8 @@ function applyHash(hash) {
   for (const element of document.querySelectorAll('.jfa')) element.hidden = !jfa();
   const first = Math.round(Number(params.get('step')));
   if (first >= 1 && first <= SIZE) firstStep = first;
-  for (const name of ['halve', 'shade', 'changed']) if (params.has(name)) control(name).checked = params.get(name) !== '0';
+  for (const name of ['halve', 'skip', 'shade', 'changed']) if (params.has(name)) control(name).checked = params.get(name) !== '0';
+  useSkip();
   if (SPEEDS.includes(Number(params.get('fps')))) control('speed').value = params.get('fps');
   if (params.has('lamps')) {
     grid.clearLamps();

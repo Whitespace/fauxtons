@@ -245,9 +245,15 @@ of sight against the grid as the last pass left it, and then says how many cells
 the grid, the page lists for each lamp and each other lamp that took cells from it in the pass the
 brightest of those cells, as the first lamp's field there.
 
+**Skip clear blocks** lets a line of sight pass over each block of 32 × 32 cells that no other lamp lights,
+as nothing in it can block the line, rather than looking at its cells one by one. The page keeps a count
+per block of the cells each lamp lights. The light comes out the same to the cell, and only the work
+changes.
+
 The status counts the work done as comparisons, the same way for every algorithm: one each time a pass
 looks at a cell of the grid, to decide the cell in a lamp's turn or a creature's move, to look at one of
-the eight cells around it, or to follow a line of sight through it.
+the eight cells around it, or to follow a line of sight through it, and one for each block a line of
+sight looks up.
 
 `src/grid2d/bench.js` times fill and kill without drawing, on the CPU and on the GPU (`gpu.js`, where the
 creatures are bits in textures and every generation is a few passes over the whole grid), for the lamps of

@@ -15,6 +15,7 @@ function cpuPass(lamps, sightFrom) {
   const grid = new Grid();
   lamps.forEach((lamp) => grid.addLamp(lamp));
   grid.sightFrom = sightFrom;
+  grid.reset();
   const start = performance.now();
   do grid.life(false);
   while (grid.alive.fill + grid.alive.kill > 0);
