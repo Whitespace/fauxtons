@@ -3,14 +3,15 @@
 // changed has cells blinking.
 
 import { CUTOFF_ANGLE } from '../scene.js';
+import { EXPOSURE, aces, decodeSrgb, encodeSrgb } from '../tone.js';
 import { Grid, SIZE, aimedLamp, lampsOfLink, lightSpeed } from './sim.js';
 
 const EMPTY = [30, 30, 34];
 const LINES = 'rgb(0 0 0 / 0.5)';
 const SPEEDS = [2, 5, 10, 30, 60, 120, 300, 600];
 // With shells, the light's speed is drawn as arrows this many cells apart, a speed of ARROW_SPEED cells per
-// unit of field-distance or more as long as nine tenths of that, and slower ones shorter by the square root
-// of the speed, so that dim lamps' arrows still show beside bright ones.
+// unit of time or more as long as nine tenths of that, and slower ones shorter by the square root of the
+// speed, so that dim lamps' arrows still show beside bright ones.
 const FIELD_SPACING = 16;
 const ARROW_SPEED = 256;
 // The most of each frame, in milliseconds, that a run spends ticking, so that it still draws.
@@ -71,9 +72,12 @@ function randomColor() {
   return [channel(0), channel(8), channel(4)];
 }
 
-// Cells lit more weakly than a lamp's light at the tip of its arrow are drawn darker, by the log of the
-// field, down to a quarter as bright.
-const shadeOf = (field) => Math.min(1, Math.max(0.25, 1 + 0.12 * Math.log2(field)));
+// Shaded by brightness, a lit cell is shown as the 3D view shows light (tone.js): its lamp's colour times the
+// field there, which is 1 at the tip of the lamp's arrow, exposed and through the tone curve. The sRGB
+// encoding is looked up, ENCODING steps to the unit.
+const ENCODING = 4096;
+const encoded = Uint8ClampedArray.from({ length: ENCODING + 1 }, (_, k) => Math.round(255 * encodeSrgb(k / ENCODING)));
+const shown = (linear, field) => encoded[Math.round(ENCODING * aces(EXPOSURE * field * linear))];
 
 // The grid as large as fits, whole device pixels to a cell, leaving room below for the status and two lines
 // of cells lost.
@@ -94,13 +98,15 @@ function draw() {
   const { data } = image;
   const { owner, lampAt, lamps, fields } = grid;
   const shade = control('shade').checked;
+  const linear = lamps.map(({ color }) => color.map((v) => decodeSrgb(v / 255)));
   for (let c = 0; c < SIZE * SIZE; c++) {
     const i = owner[c];
-    const rgb = i >= 0 ? lamps[i].color : EMPTY;
-    const s = i >= 0 && shade && lampAt[c] < 0 ? shadeOf(fields[i][c]) : 1;
-    data[4 * c] = rgb[0] * s;
-    data[4 * c + 1] = rgb[1] * s;
-    data[4 * c + 2] = rgb[2] * s;
+    if (i >= 0 && shade && lampAt[c] < 0) {
+      const field = fields[i][c];
+      for (let k = 0; k < 3; k++) data[4 * c + k] = shown(linear[i][k], field);
+    } else {
+      data.set(i >= 0 ? lamps[i].color : EMPTY, 4 * c);
+    }
     data[4 * c + 3] = 255;
   }
   if (pending) data.set([...pending.color, 255], 4 * (pending.y * SIZE + pending.x));
@@ -146,7 +152,7 @@ function draw() {
 // The speed of the light at points FIELD_SPACING cells apart, as arrows pointing straight away from a lamp,
 // as long as the lamp's light is fast there. With a lamp being aimed, its own light's, in white. Otherwise
 // at each point, the light of the lamp that lit it, in white, or if none has yet, in its colour, the light
-// that would reach it first if nothing stopped it: the lamp brightest there.
+// due there first, if nothing stops it on the way: that of the lamp whose field is strongest there.
 function speedField(aiming) {
   const { lamps, owner, fields } = grid;
   for (let y = FIELD_SPACING / 2; y < SIZE; y += FIELD_SPACING) {
@@ -195,7 +201,7 @@ function vector(x, y, u, length, rgb) {
   context.stroke();
 }
 
-// Lamp i's shell: where its light has got to, at the field-distance shells has reached, for each direction
+// Lamp i's shell: where its light has got to by the time shells has reached, for each direction
 // in its beam. White where the light is still moving out, and dashed in its colour past where something
 // stopped it.
 function shell(lamp, i) {
@@ -293,14 +299,14 @@ function cone(x, y, axis, reach) {
   context.setLineDash([]);
 }
 
-// The pass and tick, JFA's next step while running, the field-distance shells has reached, once an additional
-// pass settles what it changed, and the comparisons made in this pass and, after the first, in all of them.
+// The pass and tick, JFA's next step while running, the time shells has reached, once an additional pass
+// settles what it changed, and the comparisons made in this pass and, after the first, in all of them.
 const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 3 });
 function report() {
   const parts = [`pass ${pass}`, `tick ${grid.tick}`];
   if (jfa() && !settled) parts.push(`step ${step}`);
   if (life() && !settled && grid.tick > 0) parts.push(`${grid.alive.fill.toLocaleString()} fill`, `${grid.alive.kill.toLocaleString()} kill`);
-  if (shells() && grid.tick > 0) parts.push(`field-distance ${Number(grid.clock.toPrecision(3)).toLocaleString()}`);
+  if (shells() && grid.tick > 0) parts.push(`time ${Number(grid.clock.toPrecision(3)).toLocaleString()}`);
   if (settled) parts.push(changedCells === null ? 'settled' : changedCells ? `${changedCells.toLocaleString()} changed` : 'no change');
   parts.push(`${compact.format(grid.work)} comparisons`);
   if (pass > 1) parts.push(`${compact.format(earlierWork + grid.work)} in all`);
@@ -520,6 +526,10 @@ useShellStep();
 const useSkip = () => (grid.skipBlocks = control('skip').checked);
 control('skip').addEventListener('change', useSkip);
 useSkip();
+// So does remembering blocked rays, which a pass under way starts on from the grid as it is.
+const useRays = () => grid.setRays(control('rays').checked);
+control('rays').addEventListener('change', useRays);
+useRays();
 control('shade').addEventListener('change', draw);
 control('changed').addEventListener('change', () => {
   blink();
@@ -528,14 +538,14 @@ control('changed').addEventListener('change', () => {
 window.addEventListener('resize', fit);
 
 // The lamps and settings as the page's address, e.g.
-// #algorithm=jfa&step=128&halve=1&shell=2&skip=1&shade=1&changed=0&fps=60&lamps=64,128,71,0.43,8bea3e;206,135,-0.67,-21.9,3eddea
+// #algorithm=jfa&step=128&halve=1&shell=2&skip=1&rays=1&shade=1&changed=0&fps=60&lamps=64,128,71,0.43,8bea3e;206,135,-0.67,-21.9,3eddea
 // with each lamp as its cell, where it was aimed from its middle in cells, and its colour. Opening one gives
 // back the lamps and settings, with no light yet; anything missing is left as it is.
 function stateHash() {
   const hex = (rgb) => rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
   const lamps = grid.lamps.map(({ x, y, aim, color }) => [x, y, ...aim, hex(color)].join(',')).join(';');
   const flag = (name) => (control(name).checked ? 1 : 0);
-  return `#algorithm=${control('algorithm').value}&step=${firstStep}&halve=${flag('halve')}&shell=${grid.shellCells}&skip=${flag('skip')}&shade=${flag('shade')}&changed=${flag('changed')}&fps=${control('speed').value}&lamps=${lamps}`;
+  return `#algorithm=${control('algorithm').value}&step=${firstStep}&halve=${flag('halve')}&shell=${grid.shellCells}&skip=${flag('skip')}&rays=${flag('rays')}&shade=${flag('shade')}&changed=${flag('changed')}&fps=${control('speed').value}&lamps=${lamps}`;
 }
 
 function applyHash(hash) {
@@ -551,8 +561,9 @@ function applyHash(hash) {
     control('shell').value = params.get('shell');
     useShellStep();
   }
-  for (const name of ['halve', 'skip', 'shade', 'changed']) if (params.has(name)) control(name).checked = params.get(name) !== '0';
+  for (const name of ['halve', 'skip', 'rays', 'shade', 'changed']) if (params.has(name)) control(name).checked = params.get(name) !== '0';
   useSkip();
+  useRays();
   if (SPEEDS.includes(Number(params.get('fps')))) control('speed').value = params.get('fps');
   if (params.has('lamps')) {
     grid.clearLamps();

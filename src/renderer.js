@@ -4,6 +4,7 @@ import { IDENTITY, transformPoint } from './mat4.js';
 import { compareSightWithReference, compareSurfacesWithReference, compareWithReference, createReference, sampleSurfaces } from './reference.js';
 import { GROUND_ALBEDO, LAMP_CAPACITY, SPOT_ALBEDO, packLamps } from './scene.js';
 import { BOUNDARY_STRIDE, ExtinctionSolver, VEIL_STRIDE } from './solver.js';
+import { EXPOSURE } from './tone.js';
 
 const MAX_ACCUMULATED_FRAMES = 256;
 const WALL_FRAMES = 16;
@@ -14,7 +15,7 @@ const WALL_BAND = 64;
 // Tuned for a Spot 2.4 tall with its lamps a few units away. Inside a Spot ten times larger, light
 // travels ten times as far through the air, and the sheets pass close to the lamps.
 const LOOK = {
-  exposure: 1.1,
+  exposure: EXPOSURE,
   ambient: 0.004,
   fogDensity: 0.0035,
   veilOpacity: 0.06,

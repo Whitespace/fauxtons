@@ -1,4 +1,4 @@
-// Exposure, filmic tone curve and sRGB encoding of the accumulated image.
+// Exposure, filmic tone curve and sRGB encoding of the accumulated image, as tone.js has them for the 2D grid.
 
 uniform sampler2D uImage;
 uniform float uExposure;

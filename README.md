@@ -67,46 +67,43 @@ Two cases that follow from these rules:
   seen from A, a region bounded by A's rays that graze the sphere, and A's light fills everything
   else. B lights that shadow although A's field is stronger there, because A's light never arrives.
 
-## Field-distance
+## Arrival time
 
-A lamp's field-distance at a point is `d_i(x) = 1 / √F_i(x)`. Along one emission direction `ω` the
-profile is a constant `p_i(ω)`, so at distance `t` along the ray
+Picture every lamp switching on at time 0, its light moving straight out along every ray at a constant
+speed, `v_i(ω) = √P_i p_i(ω)` along emission direction `ω`: fast along a bright lamp's axis, slow near a
+cone edge. A lamp's arrival time at a point, when its light gets there, is then the distance `t` along
+the ray over the speed:
 
-`d_i = t / (√P_i p_i(ω))`
+`T_i(x) = t / (√P_i p_i(ω)) = 1 / √F_i(x)`
 
-Field-distance grows in proportion to distance along every ray. The constant `v_i(ω) = √P_i p_i(ω)` is
-the speed of the light along that ray.
-
-It helps to read field-distance as time, with every lamp sending out a ping. At time `d`, every lamp's
-ping sits on its own isolux shell of brightness `1 / d²`, so all pings dim together at the same rate
-and differ only in how far out that shell is. Along each ray a ping moves outward at a constant speed:
-fast along a bright lamp's axis, slow near a cone edge. Brighter at a point means arrived earlier.
-Extinction then reads: the first ping to reach a point keeps it, and a ping arriving later freezes
-there. Two pings meet face to face only on their isolux veil, where they arrive at the same time.
-Elsewhere, a later ping freezes where it enters space an earlier ping has already filled, usually well
-behind that earlier ping's leading edge.
+At time `T`, every lamp's light has got out to its own isolux shell of brightness `1 / T²`, so all the
+lamps' light dims together at the same rate and differs only in how far out that shell is. Brighter at a
+point means arrived earlier. Extinction then reads: the first light to reach a point keeps it, and light
+arriving later stops there. Two lamps' light meets face to face only on their isolux veil, where it
+arrives at the same time. Elsewhere, later light stops where it enters space earlier light has already
+filled, usually well behind that earlier light's leading edge.
 
 **The ordering.** Light of lamp `i` can be extinguished at `x` only by a lamp `j` with
-`F_j(x) > F_i(x)`, that is `d_j(x) < d_i(x)`. Whether `j`'s light reaches `x` depends only on what
-happened on `j`'s ray before `x`, and every point there has `d_j < d_j(x)`. So every decision at
-field-distance `d` depends only on decisions at field-distances smaller than `d`. The dependency is
-well founded, which has three consequences:
+`F_j(x) > F_i(x)`, that is `T_j(x) < T_i(x)`. Whether `j`'s light reaches `x` depends only on what
+happened on `j`'s ray before `x`, and every point there has `T_j < T_j(x)`. So every decision at time `T`
+depends only on decisions at earlier times. The dependency is well founded, which has three
+consequences:
 
 - the solution is unique;
-- deciding every point in increasing field-distance decides each one once, with nothing to revisit;
+- deciding every point in order of arrival time decides each one once, with nothing to revisit;
 - it gives a direct recursive definition: `j`'s light reaches `x` if at no point of `j`'s ray before
-  `x` is another lamp both brighter and reached by its own light. Each test in that recursion is at a
-  smaller field-distance, so it terminates. Slow as it is, it is exact, which makes it a check for any
-  faster method.
+  `x` is another lamp both brighter and reached by its own light. Each test in that recursion is at an
+  earlier time, so it terminates. Slow as it is, it is exact, which makes it a check for any faster
+  method.
 
-A discrete approximation keeps the first two properties only if every decision it makes at
-field-distance `d` depends on nothing decided at a larger field-distance.
+A discrete approximation keeps the first two properties only if every decision it makes at time `T`
+depends on nothing decided later.
 
 ## Solving from sight
 
 The page solves the cells one of two ways, over the same maps of each lamp's rays (`src/solver.js`).
 
-- **The sweep** decides every point in increasing field-distance, as above. Then each ray is followed
+- **The sweep** decides every point in order of arrival time, as above. Then each ray is followed
   exactly against the other lamps' light twice, to catch thin layers of light the sweep stepped over.
 - **Solve from sight** starts with every lamp's light reaching as far as nothing solid is in its way.
   Each ray is then followed exactly against the other lamps' light as the last pass left it, and cut
@@ -118,7 +115,7 @@ The brightest lamp in sight is not the model on its own, as both cases above sho
 dark space behind each of two facing lamps, and give the shadow behind B's ball to A. On the saved
 64-lamp layout it gets about 3% of Spot's walls wrong, lighting them where no light gets or giving them
 to a lamp whose light was stopped on the way (`fauxton.checkSight()`). The passes settle on the
-model's solution all the same, because each cut depends only on light at smaller field-distances; they
+model's solution all the same, because each cut depends only on light that arrived earlier; they
 revisit points rather than deciding each once. A few hundred of the millions of rays never settle,
 whichever way the solve starts: most reach Spot's wall in one pass and stop a few millimetres short of it
 in the next. The solve ends once only those are left. It gives the same cells as the sweep, and takes
@@ -239,15 +236,14 @@ with the lamps and settings, and opening it gives them back, with no light yet.
   leaves fill creatures for the lamps around to light the cell again. Kill creatures move while any are
   alive; then fill creatures move, the most powerful lamp's first. A tick moves one generation.
 - **Shells:** the order the model decides light in. A lamp's light moves straight out from it, along each
-  ray at its own speed: the length of the lamp's arrow along its axis, less off it, down to about 15% at
-  the cutoff. So it reaches a cell at the lamp's field-distance there. Each tick moves every lamp's light
-  out by the same step of field-distance, one shell, and decides the cells the light reaches in that step
-  in order of field-distance, whichever lamps they are for. A cell goes to the first lamp to reach it that
-  can see it and keeps it, as any lamp reaching it later is weaker there, so nothing is taken back. So a
-  cell waits only for its brightest lamp's light, and for the next brightest only if that one can't see
-  it.
-  **Shell step** is how far the most powerful lamp's light moves along its axis in a tick; steps that
-  light nothing are passed over.
+  ray at its own speed in cells per unit of time: the length of the lamp's arrow along its axis, less off
+  it, down to about 15% at the cutoff. Each tick moves the time on by the same step, so every lamp's light
+  moves out one shell, and decides the cells whose light arrives in that step in order of arrival time,
+  whichever lamps they are for. A cell goes to the first lamp whose light gets there and keeps it, as any
+  lamp's light arriving later is weaker there, so nothing is taken back. So a cell waits only for the
+  first light due there, and for the next only if that light was stopped on the way. **Shell step** is
+  how far the most powerful lamp's light moves along its axis in a tick; steps that light nothing are
+  passed over.
 
 With shells, arrows 16 cells apart show how fast the light moves at each point, longer by the square root
 of the speed. They are white for the light that lit the point, and in a lamp's colour for the light that
@@ -266,12 +262,27 @@ as nothing in it can block the line, rather than looking at its cells one by one
 per block of the cells each lamp lights. The light comes out the same to the cell, and only the work
 changes.
 
+**Remember blocked rays**, for shells, keeps rays for each lamp as the 3D solver does: rays across its beam,
+closer together than any cell is wide as the lamp sees it, each keeping how far out the nearest cell on it
+that would stop the lamp's light ends. A lit cell is put on the rays of every lamp it could stop. A cell is
+then decided from the two rays either side of it and the cells right behind it, and its line of sight is
+followed only where those can't tell, next to the edges of shadows: a few dozen cells in the tough scene.
+The light comes out the same to the cell. On the tough scene it takes two fifths of the time at 256², a fifth
+at 1024² and an eighth at 2048². With up to 8 lamps it takes about half, but with 32 lamps or more it takes
+longer, as every lit cell goes on the rays of every lamp it could stop.
+
+**Shade by brightness** shows the light in each cell as the 3D view shows light: the lamp's colour times its
+field there, through the same exposure and tone curve (`src/tone.js`). Where the beam fades, so does the
+cell.
+
 The status counts the work done as comparisons, the same way for every algorithm: one each time a pass
 looks at a cell of the grid, to decide the cell in a lamp's turn or a creature's move, to look at one of
 the eight cells around it, or to follow a line of sight through it, and one for each block a line of
 sight looks up. Shells also counts one for each cell it takes in turn, one for each lamp it looks at to
-find a cell's next brightest, four for each cell it sorts, as its radix sort looks at each once to count
-and three times to move it, and one for each comparison in its heap of cells waiting in shadow.
+find the next light due at a cell, four for each cell it sorts, as its radix sort looks at each once to count
+and three times to move it, and one for each comparison in its heap of cells waiting in shadow. Remembering
+blocked rays counts one for each lamp a newly lit cell is looked at for, one for each block of 16 rays and
+each ray it looks at to put the cell on, and two for looking up the rays either side of a cell.
 
 `src/grid2d/bench.js` times fill and kill without drawing, on the CPU and on the GPU (`gpu.js`, where the
 creatures are bits in textures and every generation is a few passes over the whole grid), for the lamps of
