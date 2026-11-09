@@ -114,7 +114,7 @@ bool mapLight(int k, vec3 y, out bool spot) {
 
 // Whether lamp k's light is present at y.
 bool presentAt(int k, vec3 y) {
-  if (y.y < 0.0 || fieldDistance(k, y) >= INF) return false;
+  if (y.y < 0.0 || arrivalTime(k, y) >= INF) return false;
   bool spot;
   if (!mapLight(k, y, spot)) return false;
   if (!spot) return true;
@@ -207,14 +207,14 @@ float presentFrom(int k, vec3 o, vec3 w, float ta, float tb, bool first) {
   return INF;
 }
 
-// How much stronger lamp k's field is than lamp j's at distance t along j's ray, as the difference of
-// their field-distances d_j - d_k: positive where k's is the stronger. Along the ray d_j = t / speed.
+// How much stronger lamp k's field is than lamp j's at distance t along j's ray, as how much earlier k's
+// light would arrive there, T_j - T_k: positive where k's is the stronger. Along the ray T_j = t / speed.
 float lead(int k, vec3 o, vec3 w, float speed, float t) {
-  return t / speed - fieldDistance(k, o + t * w);
+  return t / speed - arrivalTime(k, o + t * w);
 }
 
 float leadSlope(int k, vec3 o, vec3 w, float speed, float t) {
-  return 1.0 / speed - dot(fieldDistanceGradient(k, o + t * w), w);
+  return 1.0 / speed - dot(arrivalTimeGradient(k, o + t * w), w);
 }
 
 // Bisection for where the lead changes sign between `inside`, where it is positive, and `outside`;
@@ -299,7 +299,7 @@ float extinction(int j, vec3 w, float tEnd, bool first, out int partner, out int
     if (found < best) {
       best = found;
       stopper = k;
-      partner = fieldDistance(k, o + found * w) > (1.0 - 2e-3) * found / speed ? k : -1;
+      partner = arrivalTime(k, o + found * w) > (1.0 - 2e-3) * found / speed ? k : -1;
       if (!first) return best;
     }
   }

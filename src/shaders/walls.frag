@@ -5,7 +5,7 @@
 // wall is in the colour of the cell the view is in, shaded by how squarely it faces the view.
 //
 // A lamp's map tells roughly where its light ends along the ray, to about a texel, and the wall is then
-// placed exactly: a veil where the two fields are equal, d_i = d_j, and Spot's surface where the ray meets
+// placed exactly: a veil where the two fields are equal, T_i = T_j, and Spot's surface where the ray meets
 // its triangles. The light is followed there only as far as the ray's next meeting with Spot's surface,
 // where it goes out of Spot, and comes back in where the ray next meets it.
 //
@@ -43,7 +43,7 @@ const float EDGE_MARGIN = 1e-5;
 // Spot, their ends are Spot's surface. That is as good as a map gets, and it spares following the view
 // ray through Spot's triangles at every step just inside its surface, where the rays around all end on it.
 bool mapPresent(int k, vec3 y) {
-  if (y.y < 0.0 || fieldDistance(k, y) >= INF) return false;
+  if (y.y < 0.0 || arrivalTime(k, y) >= INF) return false;
   vec3 d = y - lampOrigin[k].xyz;
   float dist = length(d);
   vec2 st = mapUV(k, d) * sceneParams.z - 0.5;
@@ -254,12 +254,13 @@ ivec4 partnersAround(int c, vec3 x) {
   return found;
 }
 
-// d_c - d_p at x: negative where c's field is the stronger, and where only one lamp has a field, it wins.
+// T_c - T_p at x, how much later c's light would arrive than p's: negative where c's field is the stronger,
+// and where only one lamp has a field, it wins.
 float veilLead(int c, int p, vec3 x) {
-  float dc = fieldDistance(c, x);
-  float dp = fieldDistance(p, x);
-  if (dc >= INF) return dp >= INF ? 0.0 : 1.0;
-  return dp >= INF ? -1.0 : dc - dp;
+  float Tc = arrivalTime(c, x);
+  float Tp = arrivalTime(p, x);
+  if (Tc >= INF) return Tp >= INF ? 0.0 : 1.0;
+  return Tp >= INF ? -1.0 : Tc - Tp;
 }
 
 // Where the view ray ro + t rd crosses the veil of lamps c and p going from c's side to p's, looking out
@@ -309,10 +310,10 @@ bool allOnVeil(int k, int p, vec3 x) {
 // lamps back to back do: there the point on the ray where the other field takes over moves a long way
 // for a small error in x.
 bool meets(int c, int p, vec3 x) {
-  float d = fieldDistance(c, x);
-  if (abs(d - fieldDistance(p, x)) > 1e-3 * d) return false;
+  float T = arrivalTime(c, x);
+  if (abs(T - arrivalTime(p, x)) > 1e-3 * T) return false;
   if (allOnVeil(c, p, x) && allOnVeil(p, c, x)) return true;
-  vec3 across = 1e-4 * distance(x, lampOrigin[c].xyz) * normalize(fieldDistanceGradient(c, x) - fieldDistanceGradient(p, x));
+  vec3 across = 1e-4 * distance(x, lampOrigin[c].xyz) * normalize(arrivalTimeGradient(c, x) - arrivalTimeGradient(p, x));
   return reachesExact(c, x - across, 0.0) && reachesExact(p, x + across, 0.0);
 }
 
@@ -321,7 +322,7 @@ bool meets(int c, int p, vec3 x) {
 #define OUT_OF_CONE -3
 #define SPOT -2
 int keptFrom(int k, vec3 y) {
-  if (y.y < 0.0 || fieldDistance(k, y) >= INF) return OUT_OF_CONE;
+  if (y.y < 0.0 || arrivalTime(k, y) >= INF) return OUT_OF_CONE;
   vec3 o = lampOrigin[k].xyz;
   vec3 d = y - o;
   float dist = length(d);
@@ -333,7 +334,7 @@ int keptFrom(int k, vec3 y) {
 // Whether lamp k's light is present at y as far as `by` alone is concerned (see keptFrom()): near the edge
 // of a shadow, the one thing that casts it.
 bool presentDespite(int k, int by, vec3 y) {
-  if (y.y < 0.0 || fieldDistance(k, y) >= INF) return false;
+  if (y.y < 0.0 || arrivalTime(k, y) >= INF) return false;
   if (by == OUT_OF_CONE) return true;
   vec3 o = lampOrigin[k].xyz;
   vec3 d = y - o;
@@ -481,7 +482,7 @@ void main() {
   if (facing < 0) return;
   vec3 normal = across;
   if (partner >= 0) {
-    normal = fieldDistanceGradient(facing, x) - fieldDistanceGradient(partner, x);
+    normal = arrivalTimeGradient(facing, x) - arrivalTimeGradient(partner, x);
   } else if (onSurface && triangle >= 0) {
     normal = (1.0 - uv.x - uv.y) * dataAt(uBvhNormals, 3 * triangle).xyz + uv.x * dataAt(uBvhNormals, 3 * triangle + 1).xyz + uv.y * dataAt(uBvhNormals, 3 * triangle + 2).xyz;
   }

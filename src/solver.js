@@ -3,8 +3,9 @@ import { P_MIN, RANGE } from './scene.js';
 
 const ALIVE = 1e30;
 
-// Field-distance grows geometrically from pass to pass, so every ray advances by the same
-// fraction of its distance from the lamp each pass, whatever its speed.
+// The sweep's time grows geometrically from pass to pass, so every ray advances by the same fraction of its
+// distance from the lamp each pass, whatever its speed. Its first pass takes the fastest light
+// START_DISTANCE from its lamp.
 const STEP_RATIO = 1.03;
 const START_DISTANCE = 0.004;
 
@@ -27,7 +28,7 @@ export const VEIL_STRIDE = 8;
 export const BOUNDARY_STRIDE = 1;
 
 // Solves where each lamp's light ends along every direction of its map by sweeping all rays outward in
-// increasing field-distance, then following each ray exactly against the others' light (exact.glsl).
+// order of arrival time, then following each ray exactly against the others' light (exact.glsl).
 // The result is an atlas of distances, one map per lamp, laid out as `layout` says (createLayout() in
 // scene.js). `bvh` holds Spot's triangles, `count` of them (bvh.js).
 //
@@ -35,8 +36,8 @@ export const BOUNDARY_STRIDE = 1;
 // solid is in its way, then follows every ray exactly against the others' light as the last pass left it,
 // over and over, until the rays settle (SETTLED). After the first pass each lamp's light reaches where it
 // is the brightest lamp in sight all the way from the lamp; the later passes let light into the shadows of
-// light that has itself been cut short. Every cut depends only on light at smaller field-distances, so the
-// passes settle on the same solution as the sweep (README).
+// light that has itself been cut short. Every cut depends only on light that arrived earlier, so the passes
+// settle on the same solution as the sweep (README).
 export class ExtinctionSolver {
   constructor(gl, { programs, fullscreen, bvh, layout }) {
     this.gl = gl;

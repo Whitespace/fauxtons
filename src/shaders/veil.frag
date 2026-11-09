@@ -49,15 +49,15 @@ void main() {
     if (i != owner && j != owner) discard;
   }
   // Off the veil, where a grid corner failed to settle onto it and stretched its triangles.
-  float di = fieldDistance(i, vWorld);
-  float dj = fieldDistance(j, vWorld);
-  if (abs(di - dj) > 0.01 * di) discard;
+  float Ti = arrivalTime(i, vWorld);
+  float Tj = arrivalTime(j, vWorld);
+  if (abs(Ti - Tj) > 0.01 * Ti) discard;
   float visible = smoothstep(0.3, 0.7, endsOnVeil(i, j, vWorld));
   if (visible <= 0.0) discard;
 
   // The normal points from i's side of the veil into j's. Each lamp's light reaches the veil from its
   // own side; the sheet fades out where either lamp's rays graze it.
-  vec3 normal = normalize(fieldDistanceGradient(i, vWorld) - fieldDistanceGradient(j, vWorld));
+  vec3 normal = normalize(arrivalTimeGradient(i, vWorld) - arrivalTimeGradient(j, vWorld));
   float ci = dot(normal, normalize(vWorld - lampOrigin[i].xyz));
   float cj = -dot(normal, normalize(vWorld - lampOrigin[j].xyz));
   float arriving = smoothstep(0.0, 0.1, ci) * smoothstep(0.0, 0.1, cj);

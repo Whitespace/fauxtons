@@ -38,8 +38,9 @@ float profile(int i, vec3 dir) {
   return ct > c ? pow((ct - c) / (1.0 - c), BEAM_EXPONENT) : -1.0;
 }
 
-// Field-distance d_i(x) = 1 / sqrt(F_i(x)), INF where the field is zero.
-float fieldDistance(int i, vec3 x) {
+// Arrival time T_i(x) = 1 / sqrt(F_i(x)): when lamp i's light would get to x if nothing stopped it, INF
+// where the field is zero.
+float arrivalTime(int i, vec3 x) {
   vec3 d = x - lampOrigin[i].xyz;
   float r = length(d);
   if (r > RANGE) return INF;
@@ -48,13 +49,13 @@ float fieldDistance(int i, vec3 x) {
 }
 
 float field(int i, vec3 x) {
-  float d = fieldDistance(i, x);
-  return d < INF ? 1.0 / (d * d) : 0.0;
+  float T = arrivalTime(i, x);
+  return T < INF ? 1.0 / (T * T) : 0.0;
 }
 
-// ∇d_i at a point inside lamp i's cone. With d = r / (√P p) and d log p / d cos θ = m / (cos θ - c),
-// ∇d = (w - m (a - cos θ w) / (cos θ - c)) / (√P p).
-vec3 fieldDistanceGradient(int i, vec3 x) {
+// ∇T_i at a point inside lamp i's cone. With T = r / (√P p) and d log p / d cos θ = m / (cos θ - c),
+// ∇T = (w - m (a - cos θ w) / (cos θ - c)) / (√P p).
+vec3 arrivalTimeGradient(int i, vec3 x) {
   vec3 w = normalize(x - lampOrigin[i].xyz);
   vec3 a = lampAxis[i].xyz;
   float c = lampAxis[i].w;

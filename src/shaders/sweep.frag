@@ -1,6 +1,6 @@
-// One pass of the field-distance sweep. Every ray whose light is still travelling advances from
-// field-distance uTimePrev to uTime. It reads the other lamps' rays only as they stood at uTimePrev,
-// so no decision at field-distance d depends on one made at a larger field-distance.
+// One pass of the sweep in order of arrival time. Every ray whose light is still travelling advances
+// from time uTimePrev to uTime. It reads the other lamps' rays only as they stood at uTimePrev, so no
+// decision at time T depends on one made later.
 
 uniform sampler2D uState;     // r: distance at which each ray's light ended (ALIVE while it travels)
                               // g: the lamp whose veil it ended on, -2 if it ended on a surface, else -1
@@ -13,12 +13,12 @@ out vec2 outState;
 const float ALIVE = 1e30;
 const float SURFACE_GAP = 0.002; // how far short of an occluder, relatively, a ray last checks its light
 
-// Whether lamp j's light has reached y, which has field-distance dj for j. The reach of the 2×2 rays
+// Whether lamp j's light has reached y, where its arrival time is Tj. The reach of the 2×2 rays
 // around y is interpolated bilinearly, with a tolerance of its spread across them: where j's rays
 // meet a surface obliquely their reach changes quickly from ray to ray, and without it a surface
 // lit by j would read as unlit in places (shadow acne). The cap keeps the edges of j's light from
 // dilating.
-bool present(int j, vec3 y, float dj) {
+bool present(int j, vec3 y, float Tj) {
   vec3 d = y - lampOrigin[j].xyz;
   float dist = length(d);
   vec2 st = mapUV(j, d) * float(MAP_SIZE) - 0.5;
@@ -32,29 +32,29 @@ bool present(int j, vec3 y, float dj) {
     texelFetch(uState, origin + clamp(base + ivec2(0, 1), ivec2(0), last), 0).r,
     texelFetch(uState, origin + clamp(base + ivec2(1, 1), ivec2(0), last), 0).r);
   // Rays still travelling have carried their light at least as far as the current front.
-  reach = min(reach, vec4(uTime * dist / dj));
+  reach = min(reach, vec4(uTime * dist / Tj));
   float spread = max(max(reach.x, reach.y), max(reach.z, reach.w)) - min(min(reach.x, reach.y), min(reach.z, reach.w));
   float interpolated = mix(mix(reach.x, reach.y, f.x), mix(reach.z, reach.w, f.x), f.y);
   return dist < interpolated + min(spread, REACH_TOLERANCE * dist);
 }
 
 // True when some other lamp's field is strictly stronger at y and its light has reached y.
-bool extinguished(int i, vec3 y, float di) {
+bool extinguished(int i, vec3 y, float Ti) {
   for (int j = 0; j < LAMP_COUNT; ++j) {
     if (j == i) continue;
-    float dj = fieldDistance(j, y);
-    if (dj < di && present(j, y, dj)) return true;
+    float Tj = arrivalTime(j, y);
+    if (Tj < Ti && present(j, y, Tj)) return true;
   }
   return false;
 }
 
 // Light that meets another lamp's light head on is extinguished just past their isolux veil, where
 // the two fields are still all but equal. Anywhere else it ran into light that was already stronger.
-float veilPartner(int i, vec3 y, float di) {
+float veilPartner(int i, vec3 y, float Ti) {
   for (int j = 0; j < LAMP_COUNT; ++j) {
     if (j == i) continue;
-    float dj = fieldDistance(j, y);
-    if (dj < di && dj > (1.0 - 2e-3) * di && present(j, y, dj)) return float(j);
+    float Tj = arrivalTime(j, y);
+    if (Tj < Ti && Tj > (1.0 - 2e-3) * Ti && present(j, y, Tj)) return float(j);
   }
   return -1.0;
 }
@@ -81,7 +81,7 @@ void main() {
     return;
   }
 
-  // Along this ray d = t / speed, so field-distance T is reached at t = T * speed.
+  // Along this ray the arrival time is t / speed, so time T is reached at t = T * speed.
   vec3 o = lampOrigin[i].xyz;
   float speed = lampOrigin[i].w * p;
   float stop = min(RANGE, texelFetch(uOccluder, px, 0).r);

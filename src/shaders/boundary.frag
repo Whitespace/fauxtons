@@ -48,10 +48,10 @@ vec3 boundaryNormal(int i, vec3 x) {
 bool onVeil(int i, vec3 x) {
   ivec2 base = ivec2(floor(mapUV(i, x - lampOrigin[i].xyz) * sceneParams.z - 0.5));
   ivec2 last = ivec2(MAP_SIZE - 1);
-  float di = fieldDistance(i, x);
+  float Ti = arrivalTime(i, x);
   for (int k = 0; k < 4; ++k) {
     int j = int(texelFetch(uTags, atlasOrigin(i) + clamp(base + ivec2(k & 1, k >> 1), ivec2(0), last), 0).r) - 1;
-    if (j >= 0 && abs(fieldDistance(j, x) - di) <= 0.01 * di) return true;
+    if (j >= 0 && abs(arrivalTime(j, x) - Ti) <= 0.01 * Ti) return true;
   }
   return false;
 }

@@ -16,7 +16,8 @@ export function createReference(lamps, triangles, step = STEP) {
     return beamProfile(lamp.axis[0] * wx + lamp.axis[1] * wy + lamp.axis[2] * wz);
   }
 
-  function fieldDistance(k, x, y, z) {
+  // When lamp k's light would get to (x, y, z) if nothing stopped it: its arrival time there, 1 / √F.
+  function arrivalTime(k, x, y, z) {
     const lamp = lamps[k];
     const dx = x - lamp.position[0], dy = y - lamp.position[1], dz = z - lamp.position[2];
     const r = Math.hypot(dx, dy, dz);
@@ -50,7 +51,7 @@ export function createReference(lamps, triangles, step = STEP) {
     const extinguishedAt = (t) => {
       const px = ox + t * wx, py = oy + t * wy, pz = oz + t * wz;
       for (let k = 0; k < lamps.length; k++) {
-        if (k !== j && fieldDistance(k, px, py, pz) < t / speed && reaches(k, px, py, pz)) return true;
+        if (k !== j && arrivalTime(k, px, py, pz) < t / speed && reaches(k, px, py, pz)) return true;
       }
       return false;
     };
@@ -75,10 +76,10 @@ export function createReference(lamps, triangles, step = STEP) {
       const d = [0, 1, 2].map((k) => x[k] - lamp.position[k]);
       const r = Math.hypot(...d);
       const cosine = -(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) / r;
-      const distance = fieldDistance(i, ...x);
-      if (distance < Infinity && cosine > 0) candidates.push({ i, distance, d, skip: Math.min(rough / Math.max(cosine, 1e-3), 30 * rough) });
+      const time = arrivalTime(i, ...x);
+      if (time < Infinity && cosine > 0) candidates.push({ i, time, d, skip: Math.min(rough / Math.max(cosine, 1e-3), 30 * rough) });
     });
-    candidates.sort((a, b) => a.distance - b.distance);
+    candidates.sort((a, b) => a.time - b.time);
     for (const { i, d, skip } of candidates) {
       const p = [0, 1, 2].map((k) => lamps[i].position[k] + (1 - SURFACE_GAP) * d[k]);
       const clear = Math.max(0, skip - SURFACE_GAP * Math.hypot(...d));
@@ -87,7 +88,7 @@ export function createReference(lamps, triangles, step = STEP) {
     return -1;
   }
 
-  return { fieldDistance, reaches, litBy, inSight };
+  return { arrivalTime, reaches, litBy, inSight };
 }
 
 // Random points on Spot and, `withGround`, as many on the ground within a few units of it, as the
@@ -234,7 +235,7 @@ export function compareWithReference({ lamps, layout, reference, reachAt, sample
   for (let s = 0; s < samples; s++) {
     const x = [0, 1, 2].map((k) => min[k] + (max[k] - min[k]) * random());
     lamps.forEach((lamp, i) => {
-      if (reference.fieldDistance(i, ...x) === Infinity) return;
+      if (reference.arrivalTime(i, ...x) === Infinity) return;
       pairs++;
       const d = [0, 1, 2].map((k) => x[k] - lamp.position[k]);
       const r = Math.hypot(...d);
